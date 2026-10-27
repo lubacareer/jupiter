@@ -1,0 +1,110 @@
+name: Publish Linux build image
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open, same-repository PR whose trusted head should be published
+        required: true
+        type: string
+      expected_sha:
+        description: Exact reviewed PR head commit SHA
+        required: true
+        type: string
+      validate_only:
+        description: Verify the PR head without building or publishing
+        required: true
+        type: boolean
+        default: false
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  verify:
+    # Dispatch the protected main workflow. Environment restrictions protect
+    # credentials even if a writer alters this condition on another branch.
+    if: github.repository == 'lubacareer/jupiter' && github.actor == github.repository_owner && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.verify.outputs.sha }}
+      tag: ${{ steps.verify.outputs.tag }}
+    steps:
+      - name: Resolve open same-repository PR head
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
+          REPOSITORY: ${{ github.repository }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'PR number must be a positive integer.' >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Expected SHA must be a full lowercase commit SHA.' >&2; exit 1; }
+          pr=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")
+          jq -e --arg repo "$REPOSITORY" --arg sha "$EXPECTED_SHA" \
+            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha' <<< "$pr" >/dev/null \
+            || { echo 'Select an open same-repository PR targeting main with the expected head SHA.' >&2; exit 1; }
+          echo "sha=$EXPECTED_SHA" >> "$GITHUB_OUTPUT"
+          echo "tag=pr-${PR_NUMBER}-${EXPECTED_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+  build:
+    needs: verify
+    if: ${{ !inputs.validate_only }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      # The selected PR is user-controlled. Build and test it on a different
+      # runner before any environment secrets are made available.
+      - name: Build and test image without registry credentials
+        run: |
+          docker build --tag europa-engine-build:verify .
+          docker run --rm europa-engine-build:verify npm test
+          docker run --rm europa-engine-build:verify npm run build
+          docker save --output europa-engine-build.tar europa-engine-build:verify
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: docker-build-image
+          path: europa-engine-build.tar
+          retention-days: 1
+          if-no-files-found: error
+  publish:
+    needs: [verify, build]
+    runs-on: ubuntu-latest
+    # Configure branch restrictions and required reviewer(s) in GitHub. The
+    # Docker Hub token must exist only as an environment secret, never a repo secret.
+    environment: docker-publish
+    steps:
+      - name: Confirm the approved PR head is still current
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+          APPROVED_SHA: ${{ needs.verify.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")
+          jq -e --arg repo "$REPOSITORY" --arg sha "$APPROVED_SHA" \
+            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha' <<< "$pr" >/dev/null \
+            || { echo 'PR was closed or its head changed; dispatch a fresh run.' >&2; exit 1; }
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: docker-build-image
+      - name: Load tested image
+        run: docker load --input europa-engine-build.tar
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push uniquely tagged build image
+        env:
+          IMAGE_TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image="lubani27/europa-engine:$IMAGE_TAG"
+          docker tag europa-engine-build:verify "$image"
+          docker push "$image"
+          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
