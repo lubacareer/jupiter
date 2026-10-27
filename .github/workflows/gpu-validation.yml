@@ -1,13 +1,17 @@
-name: Hardware GPU validation
+name: Prepare manual GPU validation (no GPU test)
 on:
   workflow_dispatch:
     inputs:
       pr_number:
-        description: Open same-repository PR number (select its trusted head branch)
+        description: Open same-repository PR containing the trusted commit
+        required: true
+        type: string
+      expected_sha:
+        description: Exact reviewed PR head commit SHA
         required: true
         type: string
       platform:
-        description: Native platform of the registered GPU runner
+        description: Native platform on which validation will be performed manually
         required: true
         type: choice
         options:
@@ -18,53 +22,37 @@ permissions:
   contents: read
   pull-requests: read
 jobs:
-  verify:
-    # Never automatically run PR or fork code on a self-hosted machine.
-    if: github.repository == 'lubacareer/jupiter' && github.actor == github.repository_owner && github.ref_type == 'branch'
+  prepare:
+    # Workflow code is dispatched from main; no self-hosted runner is used.
+    if: github.repository == 'lubacareer/jupiter' && github.actor == github.repository_owner && github.ref == 'refs/heads/main'
+    name: Verify PR for manual GPU validation (no hardware test)
     runs-on: ubuntu-latest
-    outputs:
-      sha: ${{ steps.check.outputs.sha }}
     steps:
-      - id: check
+      - name: Verify selected PR and write manual instructions
         env:
           GH_TOKEN: ${{ github.token }}
           PR_NUMBER: ${{ inputs.pr_number }}
+          EXPECTED_SHA: ${{ inputs.expected_sha }}
           REPOSITORY: ${{ github.repository }}
-          SELECTED_SHA: ${{ github.sha }}
-          SELECTED_REF: ${{ github.ref_name }}
+          PLATFORM: ${{ inputs.platform }}
         shell: bash
         run: |
           set -euo pipefail
           [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'PR number must be a positive integer.' >&2; exit 1; }
+          [[ "$EXPECTED_SHA" =~ ^[0-9a-f]{40}$ ]] || { echo 'Expected SHA must be a full lowercase commit SHA.' >&2; exit 1; }
+          case "$PLATFORM" in Windows|Linux|macOS) ;; *) echo 'Unsupported platform.' >&2; exit 1 ;; esac
           pr=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")
-          jq -e --arg repo "$REPOSITORY" --arg sha "$SELECTED_SHA" --arg ref "$SELECTED_REF" \
-            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha and .head.ref == $ref' <<< "$pr" >/dev/null \
-            || { echo 'Select the current head branch of an open same-repository PR targeting main.' >&2; exit 1; }
-          echo "sha=$SELECTED_SHA" >> "$GITHUB_OUTPUT"
-  gpu:
-    needs: verify
-    runs-on: [self-hosted, '${{ inputs.platform }}', gpu]
-    timeout-minutes: 90
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.verify.outputs.sha }}
-          persist-credentials: false
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.22.2'
-          cache: npm
-      - run: npm ci
-      - run: npm run build
-      - name: Build unsigned native application
-        run: npx electron-builder --dir --publish never
-        env:
-          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-      - name: Validate packaged application on hardware
-        run: node electron/run-packaged-gpu.cjs
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: gpu-validation-${{ inputs.platform }}-${{ needs.verify.outputs.sha }}
-          path: gpu-validation-report.json
-          if-no-files-found: error
+          jq -e --arg repo "$REPOSITORY" --arg sha "$EXPECTED_SHA" \
+            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha' <<< "$pr" >/dev/null \
+            || { echo 'Select an open same-repository PR targeting main with the expected head SHA.' >&2; exit 1; }
+          {
+            printf '## Manual %s GPU validation\n\n' "$PLATFORM"
+            printf '**No GPU hardware test was performed by this workflow.**\n\n'
+            printf 'On a trusted %s machine with hardware WebGPU support, run from a checkout of this repository:\n\n' "$PLATFORM"
+            printf '```bash\n'
+            printf 'git fetch origin refs/pull/%s/head\n' "$PR_NUMBER"
+            printf 'git switch --detach %s\n' "$EXPECTED_SHA"
+            printf 'npm ci\nnpm test\nnpm run build\nnpx electron-builder --dir --publish never\nnode electron/run-packaged-gpu.cjs\n'
+            printf '```\n\n'
+            printf 'Inspect gpu-validation-report.json and verify the hardware adapter and accuracy checks. Save the report for review.\n'
+          } >> "$GITHUB_STEP_SUMMARY"
