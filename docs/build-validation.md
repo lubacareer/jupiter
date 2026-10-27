@@ -47,3 +47,6 @@ approved budget before provisioning.
 Linux hardware validation remains outstanding: the packaged WSLg test did not
 find a WebGPU adapter, even when Vulkan and Wayland were enabled. A CUDA-capable
 device alone does not establish that Electron can use WebGPU.
+
+For a cloud-hosted validation independent of the project owner's computer,
+see [on-demand cloud GPU validation](cloud-gpu-validation.md).

@@ -6,3 +6,6 @@ coverage/
 *.log
 
 gpu-validation-report.json
+gpu-report-submission.json
+gpu-report-submission.txt
+gpu-report-artifact/
