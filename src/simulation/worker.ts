@@ -99,6 +99,7 @@ function parseCheckpoint(value: unknown): Checkpoint {
   return { version: 2, state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified' };
 }
 parent.on('message', ({ data: command }) => {
+  const previousStatus = status;
   try {
     switch (command.type) {
       case 'start': {
@@ -143,7 +144,8 @@ parent.on('message', ({ data: command }) => {
       case 'getExport': parent.postMessage({ type: 'export', checkpoint: checkpoint() }); break;
     }
   } catch (error) {
-    // Invalid commands do not modify a running or paused integration.
+    // Invalid commands do not interrupt an existing integration.
+    status = state ? previousStatus : 'error';
     notice = error instanceof Error ? error.message : 'Command failed';
     snapshot();
   }

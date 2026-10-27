@@ -158,6 +158,18 @@ describe('simulation process', () => {
     expect((sent.at(-1)?.snapshot as typeof error).message).toMatch(/does not match/);
     expect((sent.at(-1)?.snapshot as typeof error).status).toBe('running');
   });
+  it('reports errors without a loaded state and preserves paused status on invalid commands', () => {
+    receive({ data: { type: 'load', checkpoint: { version: 1 } } });
+    const idleError = sent.at(-1)?.snapshot as { status: string; message: string };
+    expect(idleError.status).toBe('error');
+    expect(idleError.message).toMatch(/Invalid or unsupported checkpoint/);
+    receive({ data: { type: 'start', parameters: {} } });
+    receive({ data: { type: 'pause' } });
+    receive({ data: { type: 'load', checkpoint: { version: 1 } } });
+    const pausedError = sent.at(-1)?.snapshot as { status: string; message: string };
+    expect(pausedError.status).toBe('paused');
+    expect(pausedError.message).toMatch(/Invalid or unsupported checkpoint/);
+  });
   it('keeps original v2 override provenance when loading and flags the data unverified', () => {
     receive({ data: { type: 'start', parameters: { eccentricity: 0.03 } } });
     receive({ data: { type: 'getCheckpoint' } });

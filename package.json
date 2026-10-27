@@ -64,6 +64,7 @@
         "AppImage",
         "deb"
       ],
+      "maintainer": "lubacareer <lubacareer@gmail.com>",
       "category": "Science"
     }
   }
