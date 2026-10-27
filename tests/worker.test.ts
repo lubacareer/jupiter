@@ -147,6 +147,39 @@ describe('simulation process', () => {
     expect(restoredAgain.provenance).toBe('imported-unverified');
     expect(restoredAgain.restoredOverrides).toEqual({ eccentricity: 0.02 });
   });
+  it.each([1, 2, 3])('discards unknown state, body and sample fields from v%i imports', (version) => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
+    vi.advanceTimersByTime(100);
+    receive({ data: { type: 'getCheckpoint' } });
+    const original = sent.at(-1)?.checkpoint as any;
+    const incoming = structuredClone(version === 1
+      ? { version: 1, state: original.state, parameters: original.parameters, samples: original.samples }
+      : version === 2 ? legacyV2(original) : original);
+    incoming.state.extra = 'unknown state field';
+    for (const body of incoming.state.bodies) body.extra = 'unknown body field';
+    for (const sample of incoming.samples) sample.extra = 'unknown sample field';
+    if (version === 3) {
+      const { checksum: _checksum, ...payload } = incoming;
+      incoming.checksum.digest = checkpointDigest(payload);
+    }
+
+    receive({ data: { type: 'load', checkpoint: incoming } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: version === 3 ? 'verified' : 'unavailable' });
+    receive({ data: { type: 'getCheckpoint' } });
+    const normalized = sent.at(-1)?.checkpoint as any;
+    expect(normalized.state).toEqual(original.state);
+    expect(normalized.samples).toEqual(original.samples);
+    expect(normalized.provenance).toBe('imported-unverified');
+    const { checksum, ...payload } = normalized;
+    expect(checksum).toEqual({ algorithm: 'sha256', digest: checkpointDigest(payload) });
+    receive({ data: { type: 'getExport' } });
+    const exported = makeExport(sent.at(-1)?.checkpoint);
+    expect(exported.state).toEqual(original.state);
+    expect(exported.samples).toEqual(original.samples);
+    expect(exported.provenance).toBe('imported-unverified');
+    receive({ data: { type: 'load', checkpoint: normalized } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified' });
+  });
   it('infers version-1 overrides only for values differing exactly from the epoch defaults', () => {
     const epoch = orbitDiagnostics(createInitialOrbit());
     const cases = [

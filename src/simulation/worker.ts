@@ -1,4 +1,4 @@
-import { createInitialOrbit, orbitDiagnostics, stepOrbit, type OrbitState, type BodyName } from './orbit';
+import { createInitialOrbit, orbitDiagnostics, stepOrbit, type OrbitState, type OrbitBody, type BodyName, type Vec3 } from './orbit';
 import { CHECKPOINT_MODEL, checkpointDigest, verifyCheckpointIntegrity } from './checkpointIntegrity';
 
 type Sample = { timeSeconds: number; eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg: number };
@@ -70,26 +70,29 @@ function parseCheckpoint(value: unknown): LoadedCheckpoint {
       !isObject(value.state) || !finite(value.state.timeSeconds) || value.state.timeSeconds < 0 ||
       !Array.isArray(value.state.bodies) || value.state.bodies.length !== 4 ||
       !Array.isArray(value.samples) || value.samples.length < 1 || value.samples.length > 2000) throw new Error('Invalid or unsupported checkpoint');
-  const bodies = value.state.bodies;
+  const bodies: OrbitBody[] = [];
   const names = new Set<string>();
-  const vector = (v: unknown) => Array.isArray(v) && v.length === 3 && v.every(finite);
-  for (const body of bodies) {
+  const vector = (v: unknown): v is Vec3 => Array.isArray(v) && v.length === 3 && v.every(finite);
+  for (const body of value.state.bodies) {
     if (!isObject(body) || typeof body.name !== 'string' || !modelGms.has(body.name as BodyName) ||
         names.has(body.name) || body.gm !== modelGms.get(body.name as BodyName) ||
         !vector(body.position) || !vector(body.velocity)) throw new Error('Invalid checkpoint body or model constants');
     names.add(body.name);
+    bodies.push({ name: body.name as BodyName, gm: body.gm as number, position: [...body.position], velocity: [...body.velocity] });
   }
   const stateTime = value.state.timeSeconds;
   let previousTime = -1;
+  const normalizedSamples: Sample[] = [];
   for (const item of value.samples) {
     if (!isObject(item) || !finite(item.timeSeconds) || item.timeSeconds < 0 || item.timeSeconds > stateTime ||
         item.timeSeconds <= previousTime || !validE(item.eccentricity) || !validA(item.semiMajorAxisKm) ||
         !finite(item.resonanceAngleDeg) || item.resonanceAngleDeg < -180 || item.resonanceAngleDeg > 180) throw new Error('Invalid checkpoint sample history');
     previousTime = item.timeSeconds;
+    normalizedSamples.push({ timeSeconds: item.timeSeconds, eccentricity: item.eccentricity, semiMajorAxisKm: item.semiMajorAxisKm, resonanceAngleDeg: item.resonanceAngleDeg });
   }
-  const typedState = value.state as unknown as OrbitState;
+  const typedState: OrbitState = { timeSeconds: stateTime, bodies };
   const actual = sampleFor(typedState);
-  const last = value.samples[value.samples.length - 1] as Sample;
+  const last = normalizedSamples[normalizedSamples.length - 1];
   if (last.timeSeconds !== stateTime || !nearlyEqual(last.eccentricity, actual.eccentricity, 1e-10) ||
       !nearlyEqual(last.semiMajorAxisKm, actual.semiMajorAxisKm, 1e-5) ||
       !nearlyEqualAngle(last.resonanceAngleDeg, actual.resonanceAngleDeg, 1e-7)) throw new Error('Checkpoint history does not match its current state');
@@ -108,7 +111,7 @@ function parseCheckpoint(value: unknown): LoadedCheckpoint {
         !nearlyEqual(expected.semiMajorAxisKm, normalizedParameters.semiMajorAxisKm, 1e-5) ||
         (value.provenance !== 'local' && value.provenance !== 'imported-unverified')) throw new Error('Invalid checkpoint initial parameters or provenance');
   }
-  return { state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified', checksumStatus: value.version === 3 ? 'verified' : 'unavailable' };
+  return { state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: normalizedSamples, provenance: 'imported-unverified', checksumStatus: value.version === 3 ? 'verified' : 'unavailable' };
 }
 parent.on('message', ({ data: command }) => {
   const previousStatus = status;

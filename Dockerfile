@@ -17,4 +17,6 @@ COPY src ./src
 COPY electron ./electron
 COPY tests ./tests
 COPY docs ./docs
+RUN chown -R node:node /workspace
+USER node
 CMD ["npm", "test"]

@@ -7,4 +7,4 @@
 @media(max-width:380px){.parameter-row{grid-template-columns:100px minmax(35px,1fr) 68px 18px}.parameter-row label{font-size:10px}.parameter-row{gap:6px}}
 @media(min-width:1001px){.parameter-row{grid-template-columns:125px minmax(50px,1fr) 135px 20px}}
 @media(min-width:651px) and (max-width:1000px){.parameter-row{grid-template-columns:105px minmax(45px,1fr) 120px 20px}}
-@media(max-width:650px){.parameter-row{grid-template-columns:100px minmax(35px,1fr) minmax(95px,120px) 18px}}
+@media(max-width:650px) and (width > 380px){.parameter-row{grid-template-columns:100px minmax(35px,1fr) minmax(95px,120px) 18px}}
