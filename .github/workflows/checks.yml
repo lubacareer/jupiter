@@ -1,6 +1,7 @@
 name: Checks
 on:
   push:
+    branches: [main]
   pull_request:
 permissions:
   contents: read
@@ -35,6 +36,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: europa-engine-${{ matrix.artifact }}-${{ github.sha }}
+          retention-days: 7
           path: |
             release/*.exe
             release/*.dmg

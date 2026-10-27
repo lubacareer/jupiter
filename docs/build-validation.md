@@ -3,7 +3,16 @@
 The Checks workflow runs the test suite, production build, and unsigned native
 packaging on GitHub-hosted Linux, Windows and macOS. Installers are uploaded as
 workflow artifacts. These jobs do not prove that an actual GPU is available or
-that the GPU accuracy gates pass. The desktop packages do not require Docker.
+that the GPU accuracy gates pass. Builds run without the project owner's computer
+being online, and the desktop packages do not require Docker. Pull requests and
+pushes to `main` are checked; installer artifacts expire after seven days.
+
+The public repository uses standard GitHub-hosted runners, which are free for
+public repositories. Do not select paid larger runners or provision paid GPU
+instances for these checks. GitHub's artifact and cache storage is subject to
+account allowances and billing settings; check usage and budgets rather than
+assuming unlimited storage. Docker Hub Personal supports public repositories
+subject to pull-rate limits and fair-use terms. Provider limits may change.
 
 `Dockerfile` defines a Linux Node/Electron build-and-test environment containing
 the source at the selected commit. Build it with `docker build -t europa-engine-build .`;
@@ -33,20 +42,16 @@ without building, requiring approval, accessing the token or publishing.
 Native packages are unsigned. macOS public distribution additionally needs
 proper signing and notarization; these artifacts are for testing.
 
-For real GPU validation, check out the trusted PR commit on the target machine,
-then run `npm ci`, `npm run build`, `npx electron-builder --dir --publish never`,
-and `node electron/run-packaged-gpu.cjs`. Inspect the resulting
-`gpu-validation-report.json`. The manually dispatched **Prepare manual GPU
-validation (no GPU test)** workflow verifies the selected PR and commit and displays these instructions; it
-does not run a GPU test or report a hardware pass. This public personal repository
-cannot restrict a self-hosted runner to a particular workflow. Do not register a
-personal machine as a GPU runner; an ephemeral runner alone does not restrict
-which job can reach it. Provisioning, billing, cleanup, and release of associated
-storage and IP addresses remain manual; confirm the total quote against the
-approved budget before provisioning.
-Linux hardware validation remains outstanding: the packaged WSLg test did not
-find a WebGPU adapter, even when Vulkan and Wayland were enabled. A CUDA-capable
-device alone does not establish that Electron can use WebGPU.
+GPU hardware validation is optional and currently limited to a manual Windows
+test on a machine with a supported GPU. Check out the trusted commit, run
+`npm ci`, `npm run build`, `npx electron-builder --dir --publish never`, and
+`node electron/run-packaged-gpu.cjs`, then inspect `gpu-validation-report.json`.
+The machine is not a CI runner and does not need to stay online. The hosted
+**Prepare manual GPU validation (no GPU test)** workflow verifies a selected PR
+and commit but does not run a hardware test. Do not register a personal machine
+as a self-hosted runner for this public repository.
 
-For a cloud-hosted validation independent of the project owner's computer,
-see [on-demand cloud GPU validation](cloud-gpu-validation.md).
+Linux and macOS GPU validation is not required for this release and has not been
+established. The packaged Linux WSLg test did not find a WebGPU adapter. GPU
+experiments still require a supported hardware adapter on whichever machine runs
+them; there is no silent CPU fallback.

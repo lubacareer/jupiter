@@ -22,3 +22,5 @@ The orbit solver omits Jupiter's oblateness, Callisto, the Sun, tidal torques, d
 The tests demonstrate properties of the simplified components, not validity of a coupled planetary model. Long-term orbital trajectories and apparent resonances require particular caution.
 
 The comparison limits are engineering checks, not scientific validation. A GPU run may be slower than a CPU-only run because it also advances a reference solution. See [build and hardware validation](docs/build-validation.md) for native packages, the Linux build image, and real-device checks.
+
+Public-repository builds use standard GitHub-hosted runners and do not depend on the project owner's computer. GPU hardware validation is optional and currently covers Windows only; Linux and macOS GPU support has not been validated. GitHub and Docker Hub usage is subject to their free-tier limits and account billing settings.
