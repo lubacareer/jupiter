@@ -11,6 +11,7 @@ async function writeJsonAtomically(destination, data, { fileSystem = fs, uuid = 
     handle = await fileSystem.open(temporary, 'wx');
     created = true;
     await handle.writeFile(JSON.stringify(data, null, 2), 'utf8');
+    await handle.sync();
     await handle.close();
     handle = undefined;
     await fileSystem.rename(temporary, destination);

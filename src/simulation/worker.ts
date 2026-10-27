@@ -86,14 +86,17 @@ function parseCheckpoint(value: unknown): Checkpoint {
   if (last.timeSeconds !== stateTime || !nearlyEqual(last.eccentricity, actual.eccentricity, 1e-10) ||
       !nearlyEqual(last.semiMajorAxisKm, actual.semiMajorAxisKm, 1e-5) ||
       !nearlyEqualAngle(last.resonanceAngleDeg, actual.resonanceAngleDeg, 1e-7)) throw new Error('Checkpoint history does not match its current state');
-  const overrides = value.version === 1 ? { ...value.parameters } : parseOverrides(value.initialOverrides);
+  // Older files may contain extra parameter fields; retain only the supported
+  // inputs so restored overrides can always be passed back to Start.
+  const normalizedParameters: Parameters = { eccentricity: value.parameters.eccentricity, semiMajorAxisKm: value.parameters.semiMajorAxisKm };
+  const overrides = value.version === 1 ? { ...normalizedParameters } : parseOverrides(value.initialOverrides);
   if (value.version === 2) {
     const expected = { ...defaultParameters, ...overrides };
-    if (!nearlyEqual(expected.eccentricity, value.parameters.eccentricity, 1e-10) ||
-        !nearlyEqual(expected.semiMajorAxisKm, value.parameters.semiMajorAxisKm, 1e-5) ||
+    if (!nearlyEqual(expected.eccentricity, normalizedParameters.eccentricity, 1e-10) ||
+        !nearlyEqual(expected.semiMajorAxisKm, normalizedParameters.semiMajorAxisKm, 1e-5) ||
         (value.provenance !== 'local' && value.provenance !== 'imported-unverified')) throw new Error('Invalid checkpoint initial parameters or provenance');
   }
-  return { version: 2, state: typedState, parameters: { ...value.parameters }, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified' };
+  return { version: 2, state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified' };
 }
 parent.on('message', ({ data: command }) => {
   try {

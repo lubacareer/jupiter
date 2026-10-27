@@ -4,7 +4,7 @@ Europa Engine is an **early research prototype**, not a validated Europa model. 
 
 ## Run
 
-Install Node.js 22 or later, then run `npm ci` and `npm run dev`. The desktop app runs locally and does not require an account or server. `npm test` runs the numerical checks; `npm run build` checks types and builds the app. `npm run dist:win`, `npm run dist:mac`, and `npm run dist:linux` build platform installers on their respective operating systems. macOS distribution requires appropriate signing and notarization for public release.
+Install a supported Node.js version (22.22.2 or later in the 22.x line, 24.15.0 or later in the 24.x line, or 26.0.0 or later), then run `npm ci` and `npm run dev`. The desktop app runs locally and does not require an account or server. `npm test` runs the numerical checks; `npm run build` checks types and builds the app. `npm run dist:win`, `npm run dist:mac`, and `npm run dist:linux` build platform installers on their respective operating systems. macOS distribution requires appropriate signing and notarization for public release.
 
 ## Available today
 

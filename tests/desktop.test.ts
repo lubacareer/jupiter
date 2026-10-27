@@ -33,6 +33,54 @@ describe('atomic JSON saves', () => {
     } finally { await fs.rm(dir, { recursive: true, force: true }); }
   });
 
+  it('flushes file data before closing and renaming the temporary file', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'europa-save-'));
+    try {
+      const target = path.join(dir, 'checkpoint.json');
+      const events: string[] = [];
+      const fileSystem = {
+        ...fs,
+        open: async (file: string, flags: string) => {
+          const handle = await fs.open(file, flags);
+          return {
+            writeFile: async (data: string, encoding: BufferEncoding) => { events.push('write'); await handle.writeFile(data, encoding); },
+            sync: async () => { events.push('sync'); await handle.sync(); },
+            close: async () => { events.push('close'); await handle.close(); },
+          };
+        },
+        rename: async (from: string, to: string) => { events.push('rename'); await fs.rename(from, to); },
+      };
+      await writeJsonAtomically(target, { value: 3 }, { fileSystem });
+      expect(events).toEqual(['write', 'sync', 'close', 'rename']);
+      expect(JSON.parse(await fs.readFile(target, 'utf8'))).toEqual({ value: 3 });
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+
+  it('preserves the destination and closes and removes the temporary file when sync fails', async () => {
+    const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'europa-save-'));
+    try {
+      const target = path.join(dir, 'checkpoint.json');
+      await fs.writeFile(target, 'previous data');
+      const events: string[] = [];
+      const fileSystem = {
+        ...fs,
+        open: async (file: string, flags: string) => {
+          const handle = await fs.open(file, flags);
+          return {
+            writeFile: async (data: string, encoding: BufferEncoding) => { events.push('write'); await handle.writeFile(data, encoding); },
+            sync: async () => { events.push('sync'); throw new Error('sync failed'); },
+            close: async () => { events.push('close'); await handle.close(); },
+          };
+        },
+        rename: async (from: string, to: string) => { events.push('rename'); await fs.rename(from, to); },
+      };
+      await expect(writeJsonAtomically(target, { value: 3 }, { fileSystem })).rejects.toThrow('sync failed');
+      expect(events).toEqual(['write', 'sync', 'close']);
+      expect(await fs.readFile(target, 'utf8')).toBe('previous data');
+      expect(await fs.readdir(dir)).toEqual(['checkpoint.json']);
+    } finally { await fs.rm(dir, { recursive: true, force: true }); }
+  });
+
   it('does not present imported checkpoint provenance as established origin', () => {
     const result = makeExport({ version: 2, provenance: 'imported-unverified', initialOverrides: {}, samples: [] });
     expect(result.schema).toBe('europa-orbit-export-v2');

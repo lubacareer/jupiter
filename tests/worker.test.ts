@@ -100,6 +100,42 @@ describe('simulation process', () => {
     receive({ data: { type: 'load', checkpoint: legacy } });
     expect((sent.at(-1)?.snapshot as typeof loaded).restoreRevision).toBe(2);
   });
+  it('normalizes extra checkpoint parameter fields so a legacy file can restart and round-trip', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const original = sent.at(-1)?.checkpoint as {
+      version: number; state: unknown; samples: unknown[];
+      parameters: { eccentricity: number; semiMajorAxisKm: number }; initialOverrides: unknown;
+    };
+    const legacy = { version: 1, state: original.state, samples: original.samples, parameters: { ...original.parameters, extra: 'legacy metadata' } };
+    receive({ data: { type: 'load', checkpoint: legacy } });
+    const loaded = sent.at(-1)?.snapshot as { status: string; provenance: string; restoredParameters: unknown; restoredOverrides: unknown };
+    expect(loaded.status).toBe('paused');
+    expect(loaded.provenance).toBe('imported-unverified');
+    expect(loaded.restoredParameters).toEqual(original.parameters);
+    expect(loaded.restoredOverrides).toEqual(original.parameters);
+    receive({ data: { type: 'getCheckpoint' } });
+    const normalized = sent.at(-1)?.checkpoint as { version: number; parameters: unknown; initialOverrides: unknown };
+    expect(normalized.version).toBe(2);
+    expect(normalized.parameters).toEqual(original.parameters);
+    expect(normalized.initialOverrides).toEqual(original.parameters);
+    receive({ data: { type: 'load', checkpoint: { ...normalized, parameters: { ...original.parameters, extra: true } } } });
+    const reloaded = sent.at(-1)?.snapshot as typeof loaded;
+    expect(reloaded.status).toBe('paused');
+    expect(reloaded.restoredParameters).toEqual(original.parameters);
+    expect(reloaded.provenance).toBe('imported-unverified');
+    receive({ data: { type: 'getCheckpoint' } });
+    expect((sent.at(-1)?.checkpoint as typeof normalized).parameters).toEqual(original.parameters);
+    receive({ data: { type: 'start', parameters: reloaded.restoredOverrides } });
+    expect((sent.at(-1)?.snapshot as typeof loaded).status).toBe('running');
+    receive({ data: { type: 'getCheckpoint' } });
+    const afterRestart = sent.at(-1)?.checkpoint;
+    receive({ data: { type: 'load', checkpoint: afterRestart } });
+    const restoredAgain = sent.at(-1)?.snapshot as typeof loaded;
+    expect(restoredAgain.status).toBe('paused');
+    expect(restoredAgain.provenance).toBe('imported-unverified');
+    expect(restoredAgain.restoredOverrides).toEqual(original.parameters);
+  });
   it('preserves the active run after invalid checkpoints and reports persistent errors', () => {
     receive({ data: { type: 'start', parameters: {} } });
     vi.advanceTimersByTime(100);
