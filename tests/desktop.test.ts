@@ -89,6 +89,33 @@ describe('atomic JSON saves', () => {
     expect(result.modelConfiguration.referenceEpoch).toBe('2025-01-01 TDB');
     expect(result.epoch).toBeUndefined();
   });
+
+  it('exports a v3 checkpoint as loadable legacy data without its checkpoint-only checksum', () => {
+    const source = {
+      version: 3,
+      state: { timeSeconds: 3600, bodies: [] },
+      parameters: { eccentricity: 0.01, semiMajorAxisKm: 671000 },
+      initialOverrides: { eccentricity: 0.01 },
+      samples: [{ timeSeconds: 3600, eccentricity: 0.01, semiMajorAxisKm: 671000, resonanceAngleDeg: 0 }],
+      provenance: 'imported-unverified',
+      model: { id: 'europa-four-body-point-mass', epoch: '2025-01-01T00:00:00 TDB', solver: 'velocity-verlet-dt-300s' },
+      checksum: { algorithm: 'sha256', digest: 'a'.repeat(64) },
+    };
+    const result = makeExport(source);
+    expect(result.version).toBe(2);
+    expect(result.schema).toBe('europa-orbit-export-v2');
+    expect(result.checksum).toBeUndefined();
+    expect(result.model).toBeUndefined();
+    expect(result.checksumNote).toMatch(/No checksum covers/);
+    expect(result.state).toEqual(source.state);
+    expect(result.parameters).toEqual(source.parameters);
+    expect(result.initialOverrides).toEqual(source.initialOverrides);
+    expect(result.samples).toEqual(source.samples);
+    expect(result.provenance).toBe('imported-unverified');
+    expect(result.provenanceNote).toContain('not verified');
+    expect(source.version).toBe(3);
+    expect(source.checksum.digest).toBe('a'.repeat(64));
+  });
 });
 
 class FakeWorker extends EventEmitter {

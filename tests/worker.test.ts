@@ -1,5 +1,16 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createInitialOrbit, orbitDiagnostics } from '../src/simulation/orbit';
+import { checkpointDigest } from '../src/simulation/checkpointIntegrity';
+import { createRequire } from 'node:module';
+
+const { makeExport } = createRequire(import.meta.url)('../electron/files.cjs');
+it('matches an independently known SHA-256 canonical JSON vector', () => {
+  expect(checkpointDigest({ b: 2, a: 1 })).toBe('43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777');
+});
+function legacyV2<T extends { version?: number; checksum?: unknown; model?: unknown }>(checkpoint: T) {
+  const { checksum: _checksum, model: _model, ...payload } = checkpoint;
+  return { ...payload, version: 2 };
+}
 
 type Message = { type: string; [key: string]: unknown };
 describe('simulation process', () => {
@@ -56,7 +67,7 @@ describe('simulation process', () => {
     receive({ data: { type: 'start', parameters: {} } });
     receive({ data: { type: 'getCheckpoint' } });
     const original = sent.at(-1)?.checkpoint as { version: number; state: ReturnType<typeof createInitialOrbit>; parameters: { eccentricity: number; semiMajorAxisKm: number }; initialOverrides: Record<string, number>; provenance: string };
-    expect(original.version).toBe(2);
+    expect(original.version).toBe(3);
     expect(original.state).toEqual(createInitialOrbit());
     expect(original.initialOverrides).toEqual({});
     expect(original.provenance).toBe('local');
@@ -90,7 +101,7 @@ describe('simulation process', () => {
     expect(loaded.provenance).toBe('imported-unverified');
     receive({ data: { type: 'getExport' } });
     const output = sent.at(-1)?.checkpoint as { version: number; provenance: string; initialOverrides: unknown };
-    expect(output.version).toBe(2);
+    expect(output.version).toBe(3);
     expect(output.provenance).toBe('imported-unverified');
     expect(output.initialOverrides).toEqual(loaded.restoredParameters);
     receive({ data: { type: 'pause' } });
@@ -116,10 +127,10 @@ describe('simulation process', () => {
     expect(loaded.restoredOverrides).toEqual(original.parameters);
     receive({ data: { type: 'getCheckpoint' } });
     const normalized = sent.at(-1)?.checkpoint as { version: number; parameters: unknown; initialOverrides: unknown };
-    expect(normalized.version).toBe(2);
+    expect(normalized.version).toBe(3);
     expect(normalized.parameters).toEqual(original.parameters);
     expect(normalized.initialOverrides).toEqual(original.parameters);
-    receive({ data: { type: 'load', checkpoint: { ...normalized, parameters: { ...original.parameters, extra: true } } } });
+    receive({ data: { type: 'load', checkpoint: { ...legacyV2(normalized), parameters: { ...original.parameters, extra: true } } } });
     const reloaded = sent.at(-1)?.snapshot as typeof loaded;
     expect(reloaded.status).toBe('paused');
     expect(reloaded.restoredParameters).toEqual(original.parameters);
@@ -140,7 +151,7 @@ describe('simulation process', () => {
     receive({ data: { type: 'start', parameters: {} } });
     vi.advanceTimersByTime(100);
     receive({ data: { type: 'getCheckpoint' } });
-    const saved = sent.at(-1)?.checkpoint as { state: { timeSeconds: number; bodies: Array<{ gm: number }> }; samples: Array<{ eccentricity: number }> };
+    const saved = legacyV2(sent.at(-1)?.checkpoint as { version: number; state: { timeSeconds: number; bodies: Array<{ gm: number }> }; samples: Array<{ eccentricity: number }> });
     const badGM = structuredClone(saved);
     badGM.state.bodies[0].gm += 1;
     receive({ data: { type: 'load', checkpoint: badGM } });
@@ -173,7 +184,7 @@ describe('simulation process', () => {
   it('keeps original v2 override provenance when loading and flags the data unverified', () => {
     receive({ data: { type: 'start', parameters: { eccentricity: 0.03 } } });
     receive({ data: { type: 'getCheckpoint' } });
-    const saved = sent.at(-1)?.checkpoint;
+    const saved = legacyV2(sent.at(-1)?.checkpoint as { version: number });
     receive({ data: { type: 'load', checkpoint: saved } });
     const snapshot = sent.at(-1)?.snapshot as { restoredOverrides: unknown; provenance: string };
     expect(snapshot.restoredOverrides).toEqual({ eccentricity: 0.03 });
@@ -183,6 +194,7 @@ describe('simulation process', () => {
     receive({ data: { type: 'start', parameters: {} } });
     receive({ data: { type: 'getCheckpoint' } });
     const saved = structuredClone(sent.at(-1)?.checkpoint) as {
+      version: number;
       state: ReturnType<typeof createInitialOrbit>;
       samples: Array<{ eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg: number }>;
     };
@@ -203,10 +215,91 @@ describe('simulation process', () => {
     saved.samples[0].eccentricity = diagnostic.eccentricity;
     saved.samples[0].semiMajorAxisKm = diagnostic.semiMajorAxisKm;
     saved.samples[0].resonanceAngleDeg = -180;
-    receive({ data: { type: 'load', checkpoint: saved } });
+    receive({ data: { type: 'load', checkpoint: legacyV2(saved) } });
     const snapshot = sent.at(-1)?.snapshot as { status: string; provenance: string };
     expect(snapshot.status).toBe('paused');
     expect(snapshot.provenance).toBe('imported-unverified');
+  });
+  it('verifies v3 checksums after JSON formatting and key order changes, then rechecks a re-saved import', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
+    vi.advanceTimersByTime(100);
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint as Record<string, unknown>;
+    const { checksum, ...payload } = saved;
+    expect(checksum).toEqual({ algorithm: 'sha256', digest: checkpointDigest(payload) });
+    const reverseKeys = (value: unknown): unknown => Array.isArray(value) ? value.map(reverseKeys) : value && typeof value === 'object' ? Object.fromEntries(Object.entries(value).reverse().map(([key, entry]) => [key, reverseKeys(entry)])) : value;
+    const reformatted = JSON.parse(JSON.stringify(reverseKeys(saved), null, 4));
+    receive({ data: { type: 'load', checkpoint: reformatted } });
+    const loaded = sent.at(-1)?.snapshot as { status: string; provenance: string; checksumStatus: string };
+    expect(loaded).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified' });
+    receive({ data: { type: 'getCheckpoint' } });
+    const resaved = sent.at(-1)?.checkpoint as Record<string, unknown>;
+    const { checksum: nextChecksum, ...nextPayload } = resaved;
+    expect(nextChecksum).toEqual({ algorithm: 'sha256', digest: checkpointDigest(nextPayload) });
+    expect(nextChecksum).not.toEqual(checksum); // provenance changed on import
+    receive({ data: { type: 'load', checkpoint: JSON.parse(JSON.stringify(resaved)) } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified' });
+  });
+  it('rejects checksum corruption across the full v3 payload without interrupting the current run', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(200);
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint as any;
+    const mutations: Array<(value: any) => void> = [
+      value => { value.state.bodies[2].position[0] += 1; },
+      value => { value.samples[0].eccentricity += 0.001; },
+      value => { value.parameters.eccentricity += 0.001; },
+      value => { value.model.epoch = 'different epoch'; },
+      value => { value.model.solver = 'different solver'; },
+      value => { value.checksum.digest = '0'.repeat(64); },
+      value => { delete value.checksum; },
+      value => { value.extra = 'not covered by the original checksum'; },
+    ];
+    for (const mutate of mutations) {
+      const corrupted = structuredClone(saved);
+      mutate(corrupted);
+      receive({ data: { type: 'load', checkpoint: corrupted } });
+      expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'running', timeSeconds: saved.state.timeSeconds, provenance: 'local' });
+      expect((sent.at(-1)?.snapshot as { message: string }).message).toMatch(/checksum/i);
+    }
+    // Recomputing the public digest cannot make an unsupported model acceptable.
+    const wrongModel = structuredClone(saved);
+    wrongModel.model.solver = 'different solver';
+    const { checksum: _checksum, ...payload } = wrongModel;
+    wrongModel.checksum.digest = checkpointDigest(payload);
+    receive({ data: { type: 'load', checkpoint: wrongModel } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'running', timeSeconds: saved.state.timeSeconds });
+    expect((sent.at(-1)?.snapshot as { message: string }).message).toMatch(/model metadata/);
+    vi.advanceTimersByTime(100);
+    expect((sent.at(-1)?.snapshot as { timeSeconds: number }).timeSeconds).toBe(saved.state.timeSeconds + 3600);
+  });
+  it('continues to mark imported data unverified when an edited file has a recomputed checksum', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(200);
+    receive({ data: { type: 'getCheckpoint' } });
+    const edited = sent.at(-1)?.checkpoint as any;
+    edited.samples[0].eccentricity += 0.001;
+    const { checksum: _checksum, ...payload } = edited;
+    edited.checksum.digest = checkpointDigest(payload);
+    receive({ data: { type: 'load', checkpoint: edited } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified' });
+  });
+  it('loads both legacy formats and exports without misrepresenting a checkpoint digest as export integrity', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const fresh = sent.at(-1)?.checkpoint as { version: number; state: unknown; parameters: unknown; samples: unknown[] };
+    const v2 = legacyV2(fresh);
+    const v1 = { version: 1, state: fresh.state, parameters: fresh.parameters, samples: fresh.samples };
+    for (const legacy of [v1, v2]) {
+      receive({ data: { type: 'load', checkpoint: legacy } });
+      expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable' });
+    }
+    receive({ data: { type: 'getExport' } });
+    const exported = makeExport(sent.at(-1)?.checkpoint);
+    expect(exported.checksum).toBeUndefined();
+    expect(exported.provenance).toBe('imported-unverified');
+    receive({ data: { type: 'load', checkpoint: exported } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable' });
   });
   it('publishes current controls for remount after a new start, and clears them on reset', () => {
     receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });

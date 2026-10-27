@@ -24,8 +24,12 @@ async function writeJsonAtomically(destination, data, { fileSystem = fs, uuid = 
 }
 
 function makeExport(checkpoint) {
+  // Export v2 remains loadable as legacy data. The v3 checkpoint digest covers
+  // the checkpoint, not this expanded export document, so it must not be copied.
+  const { checksum: _checksum, model: _model, ...legacyFields } = checkpoint;
   return {
-    ...checkpoint,
+    ...legacyFields,
+    version: 2,
     schema: 'europa-orbit-export-v2',
     modelConfiguration: {
       solver: 'point-mass velocity-Verlet, dt=300 s',
@@ -36,6 +40,7 @@ function makeExport(checkpoint) {
     provenanceNote: checkpoint.provenance === 'imported-unverified'
       ? 'Loaded from a user-supplied checkpoint; its origin and trajectory are not verified.'
       : 'Generated in this session from model initial conditions, including any user-selected orbital overrides; results are not independently verified.',
+    checksumNote: 'No checksum covers this exported document.',
     units: { timeSeconds: 's', semiMajorAxisKm: 'km', resonanceAngleDeg: 'degrees' },
     assumptions: ['Four point masses', 'No tidal feedback or interior dynamics', 'Not mission-validated', 'Rolling history: latest 2,000 samples'],
   };

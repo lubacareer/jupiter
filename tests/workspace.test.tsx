@@ -95,4 +95,14 @@ describe('orbital parameter controls', () => {
     expect((screen.getByRole('button', { name: /open checkpoint/i }) as HTMLButtonElement).disabled).toBe(false)
     for (const name of [/save checkpoint/i, /export data/i, /^pause$/i, /^reset$/i]) expect((screen.getByRole('button', { name }) as HTMLButtonElement).disabled).toBe(true)
   })
+
+  it('distinguishes checksum status from unverified checkpoint origin', () => {
+    const imported = snapshot({ provenance: 'imported-unverified', checksumStatus: 'verified' })
+    const { rerender } = render(<Workspace snapshot={imported} />)
+    expect(screen.getByText(/checksum verified at load.*origin and trajectory unverified/i)).toBeTruthy()
+    rerender(<Workspace snapshot={{ ...imported, checksumStatus: 'unavailable' }} />)
+    expect(screen.getByText(/checksum unavailable.*origin and trajectory unverified/i)).toBeTruthy()
+    rerender(<Workspace snapshot={snapshot({ provenance: 'local' })} />)
+    expect(screen.queryByText(/imported checkpoint/i)).toBeNull()
+  })
 })

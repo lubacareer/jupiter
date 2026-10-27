@@ -1,10 +1,13 @@
 import { createInitialOrbit, orbitDiagnostics, stepOrbit, type OrbitState, type BodyName } from './orbit';
+import { CHECKPOINT_MODEL, checkpointDigest, verifyCheckpointIntegrity } from './checkpointIntegrity';
 
 type Sample = { timeSeconds: number; eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg: number };
 type Parameters = { eccentricity: number; semiMajorAxisKm: number };
 type Overrides = Partial<Parameters>;
 type Provenance = 'local' | 'imported-unverified';
-type Checkpoint = { version: 2; state: OrbitState; parameters: Parameters; initialOverrides: Overrides; samples: Sample[]; provenance: Provenance };
+type CheckpointPayload = { version: 3; state: OrbitState; parameters: Parameters; initialOverrides: Overrides; samples: Sample[]; provenance: Provenance; model: typeof CHECKPOINT_MODEL };
+type Checkpoint = CheckpointPayload & { checksum: { algorithm: 'sha256'; digest: string } };
+type LoadedCheckpoint = { state: OrbitState; parameters: Parameters; initialOverrides: Overrides; samples: Sample[]; provenance: Provenance; checksumStatus: 'verified' | 'unavailable' };
 type Command = { type: 'start'; parameters: Overrides } | { type: 'pause' | 'reset' | 'getCheckpoint' | 'getExport' } | { type: 'load'; checkpoint: unknown };
 type Channel = { postMessage: (data: unknown) => void; on: (name: string, cb: (event: { data: Command }) => void) => void };
 const parent = (process as unknown as { parentPort: Channel }).parentPort;
@@ -17,6 +20,7 @@ let parameters: Parameters | null = null;
 let initialOverrides: Overrides = {};
 let samples: Sample[] = [];
 let provenance: Provenance = 'local';
+let checksumStatus: 'verified' | 'unavailable' | undefined;
 let status: 'idle' | 'running' | 'paused' | 'error' = 'idle';
 let notice: string | undefined = 'Point-mass gravity only; no tidal back-reaction.';
 let restoreRevision = 0;
@@ -30,10 +34,11 @@ function sampleFor(current: OrbitState): Sample {
 }
 function checkpoint(): Checkpoint {
   if (!state || !parameters) throw new Error('No simulation is loaded');
-  return { version: 2, state, parameters, initialOverrides, samples, provenance };
+  const payload: CheckpointPayload = { version: 3, state, parameters, initialOverrides, samples, provenance, model: CHECKPOINT_MODEL };
+  return { ...payload, checksum: { algorithm: 'sha256', digest: checkpointDigest(payload) } };
 }
 function snapshot() {
-  parent.postMessage({ type: 'snapshot', snapshot: { status, timeSeconds: state?.timeSeconds ?? 0, samples, message: notice, gpuStatus: 'GPU solver unavailable · orbital integrator uses CPU float64', defaultParameters, restoreRevision, restoredParameters, restoredOverrides, provenance } });
+  parent.postMessage({ type: 'snapshot', snapshot: { status, timeSeconds: state?.timeSeconds ?? 0, samples, message: notice, gpuStatus: 'GPU solver unavailable · orbital integrator uses CPU float64', defaultParameters, restoreRevision, restoredParameters, restoredOverrides, provenance, checksumStatus } });
 }
 const finite = (n: unknown): n is number => typeof n === 'number' && Number.isFinite(n);
 const isObject = (value: unknown): value is Record<string, unknown> => !!value && typeof value === 'object' && !Array.isArray(value);
@@ -58,8 +63,10 @@ function nearlyEqualAngle(a: number, b: number, tolerance: number): boolean {
   return Math.abs(Math.atan2(Math.sin(radians), Math.cos(radians)) * 180 / Math.PI) <= tolerance;
 }
 /** Structural and model consistency checks cannot authenticate a user-supplied file. */
-function parseCheckpoint(value: unknown): Checkpoint {
-  if (!isObject(value) || (value.version !== 1 && value.version !== 2) || !validParameters(value.parameters) ||
+function parseCheckpoint(value: unknown): LoadedCheckpoint {
+  if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3)) throw new Error('Invalid or unsupported checkpoint');
+  if (value.version === 3) verifyCheckpointIntegrity(value);
+  if (!validParameters(value.parameters) ||
       !isObject(value.state) || !finite(value.state.timeSeconds) || value.state.timeSeconds < 0 ||
       !Array.isArray(value.state.bodies) || value.state.bodies.length !== 4 ||
       !Array.isArray(value.samples) || value.samples.length < 1 || value.samples.length > 2000) throw new Error('Invalid or unsupported checkpoint');
@@ -90,13 +97,13 @@ function parseCheckpoint(value: unknown): Checkpoint {
   // inputs so restored overrides can always be passed back to Start.
   const normalizedParameters: Parameters = { eccentricity: value.parameters.eccentricity, semiMajorAxisKm: value.parameters.semiMajorAxisKm };
   const overrides = value.version === 1 ? { ...normalizedParameters } : parseOverrides(value.initialOverrides);
-  if (value.version === 2) {
+  if (value.version !== 1) {
     const expected = { ...defaultParameters, ...overrides };
     if (!nearlyEqual(expected.eccentricity, normalizedParameters.eccentricity, 1e-10) ||
         !nearlyEqual(expected.semiMajorAxisKm, normalizedParameters.semiMajorAxisKm, 1e-5) ||
         (value.provenance !== 'local' && value.provenance !== 'imported-unverified')) throw new Error('Invalid checkpoint initial parameters or provenance');
   }
-  return { version: 2, state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified' };
+  return { state: typedState, parameters: normalizedParameters, initialOverrides: overrides, samples: value.samples as Sample[], provenance: 'imported-unverified', checksumStatus: value.version === 3 ? 'verified' : 'unavailable' };
 }
 parent.on('message', ({ data: command }) => {
   const previousStatus = status;
@@ -115,6 +122,7 @@ parent.on('message', ({ data: command }) => {
         restoredOverrides = { ...initialOverrides };
         samples = [nextSample];
         provenance = 'local';
+        checksumStatus = undefined;
         status = 'running';
         notice = 'Point-mass gravity only; no tidal back-reaction. Plot and export retain the latest 2,000 samples.';
         snapshot();
@@ -127,16 +135,16 @@ parent.on('message', ({ data: command }) => {
         snapshot();
         break;
       case 'reset':
-        state = null; parameters = null; initialOverrides = {}; samples = []; provenance = 'local'; status = 'idle'; notice = undefined;
+        state = null; parameters = null; initialOverrides = {}; samples = []; provenance = 'local'; checksumStatus = undefined; status = 'idle'; notice = undefined;
         restoredParameters = undefined; restoredOverrides = undefined; snapshot(); break;
       case 'load': {
         const loaded = parseCheckpoint(command.checkpoint);
-        ({ state, parameters, initialOverrides, samples, provenance } = loaded);
+        ({ state, parameters, initialOverrides, samples, provenance, checksumStatus } = loaded);
         restoredParameters = { ...loaded.parameters };
         restoredOverrides = { ...loaded.initialOverrides };
         restoreRevision++;
         status = 'paused';
-        notice = 'Checkpoint loaded as imported, unverified data; resume to continue.';
+        notice = checksumStatus === 'verified' ? 'Checksum verified; imported origin remains unverified. Resume to continue.' : 'Legacy checkpoint checksum unavailable; imported origin remains unverified. Resume to continue.';
         snapshot();
         break;
       }
