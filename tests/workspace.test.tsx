@@ -74,6 +74,59 @@ describe('orbital parameter controls', () => {
     expect(start).toHaveBeenLastCalledWith({ eccentricity: 0.03, semiMajorAxisKm: 710000 })
   })
 
+  it('keeps restored range bounds while editing and expands them for later restores', () => {
+    const start = vi.fn()
+    const first = snapshot({ restoreRevision: 1, restoredParameters: { eccentricity: 0.2, semiMajorAxisKm: 900000 }, restoredOverrides: { eccentricity: 0.2, semiMajorAxisKm: 900000 } })
+    const { rerender, unmount } = render(<Workspace snapshot={snapshot()} onStart={start} />)
+    rerender(<Workspace snapshot={first} onStart={start} />)
+    const eccentricity = screen.getByLabelText('Eccentricity value') as HTMLInputElement
+    const axis = screen.getByLabelText('Semi-major axis value') as HTMLInputElement
+    const eSlider = screen.getByRole('slider', { name: /eccentricity/i }) as HTMLInputElement
+    const aSlider = screen.getByRole('slider', { name: /semi-major axis/i }) as HTMLInputElement
+    fireEvent.change(eccentricity, { target: { value: '0.05' } })
+    fireEvent.blur(eccentricity)
+    fireEvent.change(axis, { target: { value: '700000' } })
+    fireEvent.blur(axis)
+    expect(eSlider.max).toBe('0.2')
+    expect(eccentricity.max).toBe('0.2')
+    expect(aSlider.max).toBe('900000')
+    expect(axis.max).toBe('900000')
+    fireEvent.change(eccentricity, { target: { value: '0.2' } })
+    fireEvent.blur(eccentricity)
+    fireEvent.change(axis, { target: { value: '900000' } })
+    fireEvent.blur(axis)
+    expect(Number(eccentricity.value)).toBe(0.2)
+    expect(Number(axis.value)).toBe(900000)
+    fireEvent.change(eSlider, { target: { value: '0.05' } })
+    fireEvent.change(eSlider, { target: { value: '0.2' } })
+    expect(Number(eccentricity.value)).toBe(0.2)
+    fireEvent.change(aSlider, { target: { value: '700000' } })
+    fireEvent.change(aSlider, { target: { value: '900000' } })
+    expect(Number(axis.value)).toBe(900000)
+
+    const second = snapshot({ restoreRevision: 2, restoredParameters: { eccentricity: 0.3, semiMajorAxisKm: 500000 }, restoredOverrides: { eccentricity: 0.3, semiMajorAxisKm: 500000 } })
+    rerender(<Workspace snapshot={second} onStart={start} />)
+    expect(eSlider.max).toBe('0.3')
+    expect(aSlider.min).toBe('500000')
+    expect(aSlider.max).toBe('900000')
+    fireEvent.change(axis, { target: { value: '700000' } })
+    fireEvent.blur(axis)
+    expect(axis.min).toBe('500000')
+    fireEvent.change(axis, { target: { value: '500000' } })
+    fireEvent.blur(axis)
+    expect(Number(axis.value)).toBe(500000)
+    fireEvent.change(aSlider, { target: { value: '700000' } })
+    fireEvent.change(aSlider, { target: { value: '500000' } })
+    expect(Number(axis.value)).toBe(500000)
+
+    unmount()
+    render(<Workspace snapshot={snapshot()} onStart={start} />)
+    expect((screen.getByRole('slider', { name: /eccentricity/i }) as HTMLInputElement).max).toBe('0.1')
+    const freshAxis = screen.getByRole('slider', { name: /semi-major axis/i }) as HTMLInputElement
+    expect(freshAxis.min).toBe('600000')
+    expect(freshAxis.max).toBe('800000')
+  })
+
   it('keeps edits made while a run is active when new snapshots arrive', () => {
     const start = vi.fn()
     const running = snapshot({ status: 'running', restoreRevision: 1, restoredParameters: { eccentricity: 0.02, semiMajorAxisKm: epoch.semiMajorAxisKm }, restoredOverrides: { eccentricity: 0.02 } })

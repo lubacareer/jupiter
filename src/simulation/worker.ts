@@ -96,7 +96,12 @@ function parseCheckpoint(value: unknown): LoadedCheckpoint {
   // Older files may contain extra parameter fields; retain only the supported
   // inputs so restored overrides can always be passed back to Start.
   const normalizedParameters: Parameters = { eccentricity: value.parameters.eccentricity, semiMajorAxisKm: value.parameters.semiMajorAxisKm };
-  const overrides = value.version === 1 ? { ...normalizedParameters } : parseOverrides(value.initialOverrides);
+  // Version 1 has no override metadata. Equal-to-epoch values are inferred as
+  // defaults; exact comparison preserves even small user-specified differences.
+  const overrides: Overrides = value.version === 1 ? {
+    ...(normalizedParameters.eccentricity === defaultParameters.eccentricity ? {} : { eccentricity: normalizedParameters.eccentricity }),
+    ...(normalizedParameters.semiMajorAxisKm === defaultParameters.semiMajorAxisKm ? {} : { semiMajorAxisKm: normalizedParameters.semiMajorAxisKm }),
+  } : parseOverrides(value.initialOverrides);
   if (value.version !== 1) {
     const expected = { ...defaultParameters, ...overrides };
     if (!nearlyEqual(expected.eccentricity, normalizedParameters.eccentricity, 1e-10) ||

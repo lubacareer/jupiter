@@ -82,10 +82,19 @@ function Plot({ samples }: { samples: SimulationSample[] }) {
 function Parameter({ label, symbol, value, min, max, units, onChange }: { label: string; symbol: string; value: number; min: number; max: number; units?: string; onChange: (value: number) => void }) {
   const id = `parameter-${symbol}`
   const [draft, setDraft] = useState(String(value))
+  const [bounds, setBounds] = useState(() => ({ min: Math.min(min, value), max: Math.max(max, value) }))
   useEffect(() => setDraft(String(value)), [value])
-  // Preserve valid imported values outside the normal exploration range.
-  const rangeMin = Math.min(min, value)
-  const rangeMax = Math.max(max, value)
+  // Retain every restored extent for the lifetime of this control, even if the
+  // user later edits back toward the normal exploration range.
+  useEffect(() => {
+    setBounds(previous => {
+      const next = { min: Math.min(previous.min, min, value), max: Math.max(previous.max, max, value) }
+      return next.min === previous.min && next.max === previous.max ? previous : next
+    })
+  }, [min, max, value])
+  // Include a newly restored value immediately, before the effect persists it.
+  const rangeMin = Math.min(bounds.min, min, value)
+  const rangeMax = Math.max(bounds.max, max, value)
   const commitDraft = () => {
     const n = draft.trim() === '' ? NaN : Number(draft)
     const next = Number.isFinite(n) ? Math.max(rangeMin, Math.min(rangeMax, n)) : value

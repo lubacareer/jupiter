@@ -124,12 +124,12 @@ describe('simulation process', () => {
     expect(loaded.status).toBe('paused');
     expect(loaded.provenance).toBe('imported-unverified');
     expect(loaded.restoredParameters).toEqual(original.parameters);
-    expect(loaded.restoredOverrides).toEqual(original.parameters);
+    expect(loaded.restoredOverrides).toEqual({ eccentricity: 0.02 });
     receive({ data: { type: 'getCheckpoint' } });
     const normalized = sent.at(-1)?.checkpoint as { version: number; parameters: unknown; initialOverrides: unknown };
     expect(normalized.version).toBe(3);
     expect(normalized.parameters).toEqual(original.parameters);
-    expect(normalized.initialOverrides).toEqual(original.parameters);
+    expect(normalized.initialOverrides).toEqual({ eccentricity: 0.02 });
     receive({ data: { type: 'load', checkpoint: { ...legacyV2(normalized), parameters: { ...original.parameters, extra: true } } } });
     const reloaded = sent.at(-1)?.snapshot as typeof loaded;
     expect(reloaded.status).toBe('paused');
@@ -145,7 +145,40 @@ describe('simulation process', () => {
     const restoredAgain = sent.at(-1)?.snapshot as typeof loaded;
     expect(restoredAgain.status).toBe('paused');
     expect(restoredAgain.provenance).toBe('imported-unverified');
-    expect(restoredAgain.restoredOverrides).toEqual(original.parameters);
+    expect(restoredAgain.restoredOverrides).toEqual({ eccentricity: 0.02 });
+  });
+  it('infers version-1 overrides only for values differing exactly from the epoch defaults', () => {
+    const epoch = orbitDiagnostics(createInitialOrbit());
+    const cases = [
+      {},
+      { eccentricity: 0.02 },
+      { semiMajorAxisKm: 700000 },
+      { eccentricity: epoch.eccentricity + 1e-12, semiMajorAxisKm: epoch.semiMajorAxisKm + 1e-6 },
+      // These are the earlier UI defaults, which differ from the exact epoch.
+      { eccentricity: 0.0094, semiMajorAxisKm: 671000 },
+    ];
+    for (const expectedOverrides of cases) {
+      receive({ data: { type: 'start', parameters: expectedOverrides } });
+      receive({ data: { type: 'getCheckpoint' } });
+      const original = sent.at(-1)?.checkpoint as {
+        state: ReturnType<typeof createInitialOrbit>;
+        parameters: { eccentricity: number; semiMajorAxisKm: number };
+        samples: unknown[];
+      };
+      const legacy = { version: 1, state: original.state, parameters: original.parameters, samples: original.samples };
+      receive({ data: { type: 'load', checkpoint: legacy } });
+      const loaded = sent.at(-1)?.snapshot as { status: string; restoredParameters: unknown; restoredOverrides: unknown; provenance: string; checksumStatus: string };
+      expect(loaded).toMatchObject({ status: 'paused', restoredParameters: original.parameters, restoredOverrides: expectedOverrides, provenance: 'imported-unverified', checksumStatus: 'unavailable' });
+      receive({ data: { type: 'getCheckpoint' } });
+      const migrated = sent.at(-1)?.checkpoint as { version: number; initialOverrides: unknown };
+      expect(migrated.version).toBe(3);
+      expect(migrated.initialOverrides).toEqual(expectedOverrides);
+      receive({ data: { type: 'load', checkpoint: migrated } });
+      expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', restoredOverrides: expectedOverrides, provenance: 'imported-unverified', checksumStatus: 'verified' });
+      receive({ data: { type: 'start', parameters: loaded.restoredOverrides } });
+      receive({ data: { type: 'getCheckpoint' } });
+      expect((sent.at(-1)?.checkpoint as { state: unknown }).state).toEqual(createInitialOrbit(expectedOverrides));
+    }
   });
   it('preserves the active run after invalid checkpoints and reports persistent errors', () => {
     receive({ data: { type: 'start', parameters: {} } });
