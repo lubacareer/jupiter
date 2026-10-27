@@ -65,6 +65,65 @@ describe('experimental GPU thermal comparisons', () => {
     expect(() => compareThermalStates(state, gpu, baseline, 0)).toThrow(/finite/);
   });
 
+  it('does not let cancelling historical energy values weaken the GPU comparison', async () => {
+    const config = uniformConfig();
+    const original = await createGpuThermal(fakeDevice().device, config);
+    const saved = original.snapshot();
+    const gpuEnthalpy = Array.from(new Float32Array(saved.gpuEnthalpy.length).fill(-2.97));
+    const initialEnergy = 1_000_000_000;
+    const cumulativeHeat = interiorDiagnostics(config.state).energy - initialEnergy;
+    const errors = compareThermalStates(config.state, gpuEnthalpy, initialEnergy, cumulativeHeat);
+    expect(errors.maxTemperatureKelvin).toBeLessThan(0.05);
+    expect(errors.maxLiquidFraction).toBe(0);
+    expect(errors.normalizedEnergy).toBeCloseTo(0.003, 6);
+    const fake = fakeDevice();
+    const createBuffer = vi.spyOn(fake.device, 'createBuffer');
+    await expect(createGpuThermal(fake.device, { ...saved, gpuEnthalpy, initialEnergy, cumulativeHeat }))
+      .rejects.toThrow(/normalizedEnergy/);
+    expect(createBuffer).not.toHaveBeenCalled();
+    original.destroy();
+  });
+
+  it('supports large reference enthalpy while still enforcing the relative energy limit', async () => {
+    const config = uniformConfig();
+    config.state.material.waterHeatCapacity = 1e8;
+    config.state.enthalpy.fill(1e8);
+    const session = await createGpuThermal(fakeDevice().device, config);
+    const saved = session.snapshot();
+    const within = Array.from(new Float32Array(saved.gpuEnthalpy.length).fill(100_004_096));
+    const errors = compareThermalStates(config.state, within, saved.initialEnergy, 0);
+    expect(errors.maxTemperatureKelvin).toBeLessThan(0.05);
+    expect(errors.normalizedEnergy).toBeCloseTo(4096 / 1e8, 8);
+    const restored = await createGpuThermal(fakeDevice().device, { ...saved, gpuEnthalpy: within });
+    restored.destroy();
+
+    const beyond = Array.from(new Float32Array(saved.gpuEnthalpy.length).fill(100_010_240));
+    await expect(createGpuThermal(fakeDevice().device, { ...saved, gpuEnthalpy: beyond }))
+      .rejects.toThrow(/normalizedEnergy/);
+    session.destroy();
+  });
+
+  it('uses absolute cell enthalpies when positive and negative reference energy cancels', async () => {
+    const config = uniformConfig();
+    config.state.enthalpy.fill(-100);
+    config.state.enthalpy.fill(100, config.state.enthalpy.length / 2);
+    expect(interiorDiagnostics(config.state).energy).toBe(0);
+    const session = await createGpuThermal(fakeDevice().device, config);
+    const saved = session.snapshot();
+    const gpuEnthalpy = Array.from(Float32Array.from(saved.gpuEnthalpy, value => value + 0.005));
+    const errors = compareThermalStates(config.state, gpuEnthalpy, 0, 0);
+    expect(errors.normalizedEnergy).toBeCloseTo(0.00005, 6);
+    const restored = await createGpuThermal(fakeDevice().device, { ...saved, gpuEnthalpy });
+    restored.destroy(); session.destroy();
+  });
+
+  it('rejects overflow in the absolute reference-enthalpy scale', () => {
+    const state = uniformConfig().state;
+    state.enthalpy.fill(Number.MAX_VALUE);
+    expect(() => compareThermalStates(state, new Float32Array(state.enthalpy.length), 0, 0))
+      .toThrow(/absolute enthalpy density sum.*finite/);
+  });
+
   it('restores the accepted GPU and reference states and advances independently', async () => {
     const fake = fakeDevice();
     const session = await createGpuThermal(fake.device, uniformConfig());

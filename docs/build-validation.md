@@ -19,8 +19,8 @@ selected commit's build scripts execute before publishing. Configure the
 `DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets in GitHub, not in
 source files. Tags include the PR number, full commit SHA, workflow run ID and
 attempt; they are never `latest`. Configure Docker Hub immutable-tag protection
-for `pr-*` to enforce tag immutability at the registry, and record the returned
-image digest when consuming the image. A unique tag alone cannot prevent a
+with the regular expression `^pr-.*$`, and record the returned image digest when
+consuming the image. A unique tag alone cannot prevent a
 registry user from overwriting it.
 
 Native packages are unsigned. macOS public distribution additionally needs
@@ -34,3 +34,6 @@ short-lived trusted runners; never use this workflow for untrusted PR code.
 It builds the native unpacked application, runs its hardware test, and uploads `gpu-validation-report.json`. Provisioning,
 billing, cleanup, and release of associated storage and IP addresses remain
 manual; confirm the total quote against the approved budget before provisioning.
+Linux hardware validation remains outstanding: the packaged WSLg test did not
+find a WebGPU adapter, even when Vulkan and Wayland were enabled. A CUDA-capable
+device alone does not establish that Electron can use WebGPU.

@@ -46,22 +46,32 @@ function requireFinite(n: number, name: string): void {
   if (!Number.isFinite(n)) throw new RangeError(`${name} must be finite`);
 }
 
-/** Shared scale for energy conservation and GPU/reference comparisons. */
-function thermalEnergyScale(reference: InteriorState, initialEnergy: number, cumulativeHeat: number): number {
-  requireFinite(initialEnergy, 'initialEnergy');
-  requireFinite(cumulativeHeat, 'cumulativeHeat');
+/** Shared scale that cannot be inflated by cancelling accounting metadata. */
+function thermalEnergyScale(reference: InteriorState): number {
   const { dx, dy, dz } = reference.grid;
-  const volume = dx * dy * dz * reference.enthalpy.length;
+  const cellVolume = dx * dy * dz;
+  const volume = cellVolume * reference.enthalpy.length;
   const latentEnergy = reference.material.density * reference.material.latentHeat * volume;
+  requireFinite(cellVolume, 'cell volume');
   requireFinite(volume, 'thermal volume');
   requireFinite(latentEnergy, 'latent energy');
-  return Math.max(latentEnergy, Math.abs(initialEnergy), Math.abs(cumulativeHeat), 1);
+  let absoluteEnthalpyDensity = 0;
+  for (const enthalpy of reference.enthalpy) {
+    requireFinite(enthalpy, 'reference enthalpy');
+    absoluteEnthalpyDensity += Math.abs(enthalpy);
+  }
+  requireFinite(absoluteEnthalpyDensity, 'absolute enthalpy density sum');
+  const absoluteEnthalpy = absoluteEnthalpyDensity * cellVolume;
+  requireFinite(absoluteEnthalpy, 'absolute enthalpy');
+  return Math.max(latentEnergy, absoluteEnthalpy, 1);
 }
 
 /** Compare every cell and the integrated energy in SI units. */
 export function compareThermalStates(reference: InteriorState, gpuEnthalpy: ArrayLike<number>, initialEnergy: number, cumulativeHeat: number): ThermalErrors {
   if (gpuEnthalpy.length !== reference.enthalpy.length) throw new RangeError('GPU field length does not match the reference');
-  const energyScale = thermalEnergyScale(reference, initialEnergy, cumulativeHeat);
+  requireFinite(initialEnergy, 'initialEnergy');
+  requireFinite(cumulativeHeat, 'cumulativeHeat');
+  const energyScale = thermalEnergyScale(reference);
   let maxTemperatureKelvin = 0;
   let maxLiquidFraction = 0;
   let gpuEnergyDensity = 0;
@@ -78,7 +88,13 @@ export function compareThermalStates(reference: InteriorState, gpuEnthalpy: Arra
   const { dx, dy, dz } = reference.grid;
   const cellVolume = dx * dy * dz;
   const referenceEnergy = interiorDiagnostics(reference).energy;
-  const normalizedEnergy = Math.abs(gpuEnergyDensity * cellVolume - referenceEnergy) / energyScale;
+  requireFinite(gpuEnergyDensity, 'GPU enthalpy density sum');
+  requireFinite(referenceEnergy, 'reference energy');
+  const gpuEnergy = gpuEnergyDensity * cellVolume;
+  requireFinite(gpuEnergy, 'GPU energy');
+  const energyDifference = Math.abs(gpuEnergy - referenceEnergy);
+  requireFinite(energyDifference, 'energy difference');
+  const normalizedEnergy = energyDifference / energyScale;
   return { maxTemperatureKelvin, maxLiquidFraction, normalizedEnergy };
 }
 
@@ -154,7 +170,9 @@ export async function createGpuThermal(device: GPUDevice, input: GpuThermalConfi
   requireFinite(referenceEnergy, 'reference energy');
   const initialEnergy = restored ? input.initialEnergy : referenceEnergy;
   let cumulativeHeat = restored ? input.cumulativeHeat : 0;
-  const energyScale = thermalEnergyScale(state, initialEnergy, cumulativeHeat);
+  requireFinite(initialEnergy, 'initialEnergy');
+  requireFinite(cumulativeHeat, 'cumulativeHeat');
+  const energyScale = thermalEnergyScale(state);
   const expectedEnergy = initialEnergy + cumulativeHeat;
   requireFinite(expectedEnergy, 'expected energy');
   const energyDifference = Math.abs(referenceEnergy - expectedEnergy);
