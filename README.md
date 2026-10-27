@@ -9,7 +9,7 @@ Install Node.js 22 or later, then run `npm ci` and `npm run dev`. The desktop ap
 ## Available today
 
 - A 3D illustrative cutaway and a four-point-mass Jupiter–Io–Europa–Ganymede orbital integration in a separate desktop process. Edit Europa's initial eccentricity and semi-major axis, run or pause, and plot osculating eccentricity and the Laplace angle. The illustration is not solver output and is not to scale.
-- Checkpoint save/restore and JSON export of the current orbital state and the latest 2,000 samples. Runs use a 300-second integration step; elapsed animation time is not physical time.
+- Checkpoint save/restore and JSON export of the current orbital state and the latest 2,000 samples. Runs use a 300-second integration step; elapsed animation time is not physical time. Imported checkpoints are unverified user-supplied data, even when their model constants pass validation.
 - An independent, CPU-based 3D Cartesian enthalpy diffusion component, with numerical tests. This component is not connected to the user interface or the orbit model.
 
 The initial orbital state comes from JPL Horizons at 2025-01-01 TDB. It is translated to the four-body centre of mass and edited values represent a hypothetical new orbit. See [orbital model and provenance](docs/orbit.md) and [thermal component](docs/interior.md) for equations, units, tests, and limitations.

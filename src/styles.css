@@ -5,3 +5,6 @@
 @media(max-width:650px){.app-header{height:auto;min-height:72px;align-items:flex-start;padding:14px 0;flex-direction:column}.header-actions{width:100%;flex-wrap:wrap}.header-actions .utility-button{font-size:10px;padding:7px}.titlebar{padding-top:21px}.titlebar h1{font-size:24px}.right-column,.bottom-grid{grid-template-columns:1fr}.plot-panel{grid-column:auto}.moon-panel{min-height:420px}.moon-stage{min-height:320px}.moon-caption{gap:9px;font-size:9px}.stats-grid{gap:8px}.stats-grid strong{font-size:16px}.control-buttons{flex-wrap:wrap}footer{flex-direction:column}.parameter-row{grid-template-columns:115px minmax(45px,1fr) 75px 20px}}
 .plot-retention{margin:0;padding:0 19px 10px;color:#91a8b9;font-size:10px}
 @media(max-width:380px){.parameter-row{grid-template-columns:100px minmax(35px,1fr) 68px 18px}.parameter-row label{font-size:10px}.parameter-row{gap:6px}}
+@media(min-width:1001px){.parameter-row{grid-template-columns:125px minmax(50px,1fr) 135px 20px}}
+@media(min-width:651px) and (max-width:1000px){.parameter-row{grid-template-columns:105px minmax(45px,1fr) 120px 20px}}
+@media(max-width:650px){.parameter-row{grid-template-columns:100px minmax(35px,1fr) minmax(95px,120px) 18px}}

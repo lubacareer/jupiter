@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createInitialOrbit, orbitDiagnostics } from '../src/simulation/orbit';
 
 type Message = { type: string; [key: string]: unknown };
 describe('simulation process', () => {
@@ -9,8 +10,8 @@ describe('simulation process', () => {
     vi.useFakeTimers();
     sent = [];
     Object.defineProperty(process, 'parentPort', { configurable: true, value: {
-      on: (_name: string, callback: typeof receive) => { receive = callback; },
-      postMessage: (message: Message) => sent.push(message),
+      on: (_name: string, callback: typeof receive) => { receive = event => callback(structuredClone(event)); },
+      postMessage: (message: Message) => sent.push(structuredClone(message)),
     } });
     await import('../src/simulation/worker');
   });
@@ -50,5 +51,131 @@ describe('simulation process', () => {
     receive({ data: { type: 'load', checkpoint: { version: 1 } } });
     receive({ data: { type: 'getCheckpoint' } });
     expect(sent.at(-1)?.checkpoint).toEqual(saved);
+  });
+  it('uses the exact epoch state without overrides and preserves omitted elements for a single-field edit', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const original = sent.at(-1)?.checkpoint as { version: number; state: ReturnType<typeof createInitialOrbit>; parameters: { eccentricity: number; semiMajorAxisKm: number }; initialOverrides: Record<string, number>; provenance: string };
+    expect(original.version).toBe(2);
+    expect(original.state).toEqual(createInitialOrbit());
+    expect(original.initialOverrides).toEqual({});
+    expect(original.provenance).toBe('local');
+    const epoch = orbitDiagnostics(createInitialOrbit());
+    expect(original.parameters).toEqual({ eccentricity: epoch.eccentricity, semiMajorAxisKm: epoch.semiMajorAxisKm });
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.03 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const edited = sent.at(-1)?.checkpoint as typeof original;
+    expect(edited.initialOverrides).toEqual({ eccentricity: 0.03 });
+    expect(edited.parameters.semiMajorAxisKm).toBe(epoch.semiMajorAxisKm);
+    expect(edited.state).toEqual(createInitialOrbit({ eccentricity: 0.03 }));
+    receive({ data: { type: 'start', parameters: { semiMajorAxisKm: 700000 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const editedAxis = sent.at(-1)?.checkpoint as typeof original;
+    expect(editedAxis.parameters.eccentricity).toBe(epoch.eccentricity);
+    expect(editedAxis.state).toEqual(createInitialOrbit({ semiMajorAxisKm: 700000 }));
+  });
+  it('restores v1 data as unverified and emits one load revision, preserving values beyond UI defaults', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.2, semiMajorAxisKm: 900000 } } });
+    vi.advanceTimersByTime(200);
+    receive({ data: { type: 'pause' } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const latest = sent.at(-1)?.checkpoint as { state: unknown; parameters: { eccentricity: number; semiMajorAxisKm: number }; samples: unknown[] };
+    const legacy = { version: 1, state: latest.state, parameters: latest.parameters, samples: latest.samples };
+    receive({ data: { type: 'load', checkpoint: legacy } });
+    const loaded = sent.at(-1)?.snapshot as { restoreRevision: number; restoredParameters: unknown; restoredOverrides: unknown; provenance: string; status: string };
+    expect(loaded.status).toBe('paused');
+    expect(loaded.restoreRevision).toBe(1);
+    expect(loaded.restoredParameters).toEqual({ eccentricity: 0.2, semiMajorAxisKm: 900000 });
+    expect(loaded.restoredOverrides).toEqual(loaded.restoredParameters);
+    expect(loaded.provenance).toBe('imported-unverified');
+    receive({ data: { type: 'getExport' } });
+    const output = sent.at(-1)?.checkpoint as { version: number; provenance: string; initialOverrides: unknown };
+    expect(output.version).toBe(2);
+    expect(output.provenance).toBe('imported-unverified');
+    expect(output.initialOverrides).toEqual(loaded.restoredParameters);
+    receive({ data: { type: 'pause' } });
+    vi.advanceTimersByTime(100);
+    expect((sent.at(-1)?.snapshot as typeof loaded).restoreRevision).toBe(1);
+    receive({ data: { type: 'pause' } });
+    receive({ data: { type: 'load', checkpoint: legacy } });
+    expect((sent.at(-1)?.snapshot as typeof loaded).restoreRevision).toBe(2);
+  });
+  it('preserves the active run after invalid checkpoints and reports persistent errors', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(100);
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint as { state: { timeSeconds: number; bodies: Array<{ gm: number }> }; samples: Array<{ eccentricity: number }> };
+    const badGM = structuredClone(saved);
+    badGM.state.bodies[0].gm += 1;
+    receive({ data: { type: 'load', checkpoint: badGM } });
+    const error = sent.at(-1)?.snapshot as { status: string; timeSeconds: number; message: string };
+    expect(error.status).toBe('running');
+    expect(error.message).toMatch(/model constants/);
+    vi.advanceTimersByTime(100);
+    const next = sent.at(-1)?.snapshot as typeof error;
+    expect(next.status).toBe('running');
+    expect(next.timeSeconds).toBe(error.timeSeconds + 3600);
+    expect(next.message).toMatch(/model constants/);
+    const badSample = structuredClone(saved);
+    badSample.samples.at(-1)!.eccentricity += 0.1;
+    receive({ data: { type: 'load', checkpoint: badSample } });
+    expect((sent.at(-1)?.snapshot as typeof error).message).toMatch(/does not match/);
+    expect((sent.at(-1)?.snapshot as typeof error).status).toBe('running');
+  });
+  it('keeps original v2 override provenance when loading and flags the data unverified', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.03 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint;
+    receive({ data: { type: 'load', checkpoint: saved } });
+    const snapshot = sent.at(-1)?.snapshot as { restoredOverrides: unknown; provenance: string };
+    expect(snapshot.restoredOverrides).toEqual({ eccentricity: 0.03 });
+    expect(snapshot.provenance).toBe('imported-unverified');
+  });
+  it('accepts equivalent resonance angles across the -180/180 degree boundary', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = structuredClone(sent.at(-1)?.checkpoint) as {
+      state: ReturnType<typeof createInitialOrbit>;
+      samples: Array<{ eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg: number }>;
+    };
+    const jupiter = saved.state.bodies.find(body => body.name === 'Jupiter')!;
+    const ganymede = saved.state.bodies.find(body => body.name === 'Ganymede')!;
+    const original = orbitDiagnostics(saved.state).laplaceAngleDeg;
+    const deltaDegrees = (((180 - 1e-9 - original + 180) % 360) + 360) % 360 - 180;
+    const rotation = deltaDegrees * Math.PI / 360;
+    const cos = Math.cos(rotation), sin = Math.sin(rotation);
+    for (const field of ['position', 'velocity'] as const) {
+      const x = ganymede[field][0] - jupiter[field][0];
+      const y = ganymede[field][1] - jupiter[field][1];
+      ganymede[field][0] = jupiter[field][0] + x * cos - y * sin;
+      ganymede[field][1] = jupiter[field][1] + x * sin + y * cos;
+    }
+    const diagnostic = orbitDiagnostics(saved.state);
+    expect(diagnostic.laplaceAngleDeg).toBeGreaterThan(179.9999999);
+    saved.samples[0].eccentricity = diagnostic.eccentricity;
+    saved.samples[0].semiMajorAxisKm = diagnostic.semiMajorAxisKm;
+    saved.samples[0].resonanceAngleDeg = -180;
+    receive({ data: { type: 'load', checkpoint: saved } });
+    const snapshot = sent.at(-1)?.snapshot as { status: string; provenance: string };
+    expect(snapshot.status).toBe('paused');
+    expect(snapshot.provenance).toBe('imported-unverified');
+  });
+  it('publishes current controls for remount after a new start, and clears them on reset', () => {
+    receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
+    receive({ data: { type: 'getCheckpoint' } });
+    const old = sent.at(-1)?.checkpoint;
+    receive({ data: { type: 'load', checkpoint: old } });
+    const loaded = sent.at(-1)?.snapshot as { restoreRevision: number };
+    receive({ data: { type: 'start', parameters: { semiMajorAxisKm: 700000 } } });
+    const started = sent.at(-1)?.snapshot as { restoreRevision: number; restoredParameters: { eccentricity: number; semiMajorAxisKm: number }; restoredOverrides: Record<string, number> };
+    expect(started.restoreRevision).toBe(loaded.restoreRevision);
+    expect(started.restoredParameters.eccentricity).toBe(orbitDiagnostics(createInitialOrbit()).eccentricity);
+    expect(started.restoredParameters.semiMajorAxisKm).toBe(700000);
+    expect(started.restoredOverrides).toEqual({ semiMajorAxisKm: 700000 });
+    receive({ data: { type: 'reset' } });
+    const reset = sent.at(-1)?.snapshot as { restoredParameters?: unknown; restoredOverrides?: unknown; restoreRevision: number };
+    expect(reset.restoreRevision).toBe(loaded.restoreRevision);
+    expect(reset.restoredParameters).toBeUndefined();
+    expect(reset.restoredOverrides).toBeUndefined();
   });
 });

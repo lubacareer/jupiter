@@ -10,4 +10,6 @@ Europa's displayed osculating semi-major axis and eccentricity are derived from 
 
 Editing Europa's eccentricity or semi-major axis reconstructs a consistent bound two-body osculating ellipse at the initial true anomaly and orbital-plane orientation, then re-centres the four-body system. This is a new hypothetical state, not an ephemeris observation. A changed initial orbit invalidates existing integration results.
 
+An untouched new run begins with the stored Horizons state without reconstructing it from rounded display values. A run with an edited initial element is hypothetical. A checkpoint restored from disk is user-supplied data; validation checks its structure and model constants, but cannot prove that its positions or history were produced by this solver. Exports and subsequent checkpoints identify restored data as imported and unverified. Existing valid version-1 checkpoint files remain loadable.
+
 Tests cover initial values, edits, reversibility, a two-body circular orbit, four-body conservation, and timestep refinement. These are numerical checks of the stated simplified equations, not scientific validation of the full Europa system.

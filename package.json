@@ -21,6 +21,7 @@
     "three": "^0.180.0"
   },
   "devDependencies": {
+    "@testing-library/react": "^16.3.3",
     "@types/node": "^22.0.0",
     "@types/react": "^19.2.0",
     "@types/react-dom": "^19.2.0",
@@ -30,6 +31,7 @@
     "electron": "^39.0.0",
     "electron-builder": "^26.0.0",
     "esbuild": "^0.25.0",
+    "jsdom": "^30.1.3",
     "typescript": "^5.9.0",
     "vite": "^7.0.0",
     "vitest": "^3.0.0",
@@ -38,10 +40,28 @@
   "build": {
     "appId": "org.europaengine.prototype",
     "productName": "Europa Engine",
-    "files": ["dist/**/*", "dist-electron/**/*", "electron/**/*", "package.json"],
-    "directories": { "output": "release" },
-    "win": { "target": "nsis" },
-    "mac": { "target": "dmg", "category": "public.app-category.education" },
-    "linux": { "target": ["AppImage", "deb"], "category": "Science" }
+    "files": [
+      "dist/**/*",
+      "dist-electron/**/*",
+      "electron/**/*",
+      "package.json"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg",
+      "category": "public.app-category.education"
+    },
+    "linux": {
+      "target": [
+        "AppImage",
+        "deb"
+      ],
+      "category": "Science"
+    }
   }
 }

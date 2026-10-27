@@ -1,7 +1,9 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { MoonView } from './MoonView'
+import { createInitialOrbit, orbitDiagnostics } from '../simulation/orbit'
+import { createParameterState, editParameter, restoreParameters, type SimulationParameters, type ParameterOverrides } from './parameterState'
 
-export type SimulationParameters = { eccentricity: number; semiMajorAxisKm: number }
+export type { SimulationParameters, ParameterOverrides } from './parameterState'
 export type SimulationSample = { timeSeconds: number; eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg?: number }
 export type SimulationSnapshot = {
   status: 'idle' | 'running' | 'paused' | 'complete' | 'error'
@@ -9,10 +11,17 @@ export type SimulationSnapshot = {
   samples: SimulationSample[]
   message?: string
   gpuStatus?: string
+  workerAvailable?: boolean
+  workerGeneration?: number
+  defaultParameters?: SimulationParameters
+  restoredParameters?: SimulationParameters
+  restoredOverrides?: ParameterOverrides
+  restoreRevision?: number
+  provenance?: 'local' | 'imported-unverified'
 }
 export type WorkspaceProps = {
   snapshot?: SimulationSnapshot
-  onStart?: (params: SimulationParameters) => void
+  onStart?: (params: ParameterOverrides) => void
   onPause?: () => void
   onReset?: () => void
   onExport?: () => void
@@ -21,10 +30,12 @@ export type WorkspaceProps = {
 }
 
 const DEFAULT_SNAPSHOT: SimulationSnapshot = { status: 'idle', timeSeconds: 0, samples: [] }
+const epochDiagnostics = orbitDiagnostics(createInitialOrbit())
+const EPOCH_PARAMETERS: SimulationParameters = { eccentricity: epochDiagnostics.eccentricity, semiMajorAxisKm: epochDiagnostics.semiMajorAxisKm }
 const formatDays = (seconds: number) => (seconds / 86400).toLocaleString(undefined, { maximumFractionDigits: 2 })
 
 function OrbitGraphic({ eccentricity }: { eccentricity: number }) {
-  const focus = 262 - Math.min(eccentricity, 0.1) * 211
+  const focus = 262 - Math.min(Math.max(eccentricity, 0), 1) * 211
   return <svg className="orbit-graphic" viewBox="0 0 520 190" aria-label="Schematic of Europa's orbit around Jupiter" role="img">
     <defs>
       <radialGradient id="jupiter-fill" cx="32%" cy="28%"><stop stopColor="#e4c7aa" /><stop offset="0.68" stopColor="#a0785f" /><stop offset="1" stopColor="#4f3c37" /></radialGradient>
@@ -67,33 +78,46 @@ function Plot({ samples }: { samples: SimulationSample[] }) {
   </div>
 }
 
-function Parameter({ label, symbol, value, min, max, step, units, onChange }: { label: string; symbol: string; value: number; min: number; max: number; step: number; units?: string; onChange: (value: number) => void }) {
+function Parameter({ label, symbol, value, min, max, units, onChange }: { label: string; symbol: string; value: number; min: number; max: number; units?: string; onChange: (value: number) => void }) {
   const id = `parameter-${symbol}`
   const [draft, setDraft] = useState(String(value))
   useEffect(() => setDraft(String(value)), [value])
+  // Preserve valid imported values outside the normal exploration range.
+  const rangeMin = Math.min(min, value)
+  const rangeMax = Math.max(max, value)
   const commitDraft = () => {
     const n = draft.trim() === '' ? NaN : Number(draft)
-    const next = Number.isFinite(n) ? Math.max(min, Math.min(max, n)) : value
+    const next = Number.isFinite(n) ? Math.max(rangeMin, Math.min(rangeMax, n)) : value
     setDraft(String(next))
     onChange(next)
   }
   return <div className="parameter-row">
     <label htmlFor={id}>{label} <i>{symbol}</i></label>
-    <input id={id} type="range" min={min} max={max} step={step} value={value} onChange={event => onChange(Number(event.target.value))}/>
-    <input aria-label={`${label} value`} type="number" min={min} max={max} step={step} value={draft} onChange={event => setDraft(event.target.value)} onBlur={commitDraft} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} />
+    <input id={id} type="range" min={rangeMin} max={rangeMax} step="any" value={value} onChange={event => onChange(Number(event.target.value))}/>
+    <input aria-label={`${label} value`} type="number" min={rangeMin} max={rangeMax} step="any" value={draft} onChange={event => setDraft(event.target.value)} onBlur={commitDraft} onKeyDown={event => { if (event.key === 'Enter') event.currentTarget.blur() }} />
     <span className="unit">{units || ' '}</span>
   </div>
 }
 
 export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPause, onReset, onExport, onSaveCheckpoint, onLoadCheckpoint }: WorkspaceProps) {
-  const [eccentricity, setEccentricity] = useState(0.0094)
-  const [semiMajorAxisKm, setSemiMajorAxisKm] = useState(671000)
+  const [parameters, setParameters] = useState(() => createParameterState(snapshot.defaultParameters ?? EPOCH_PARAMETERS))
+  const lastRestoreKey = useRef<string | undefined>(undefined)
+  useEffect(() => {
+    const key = snapshot.restoreRevision === undefined ? undefined : `${snapshot.workerGeneration ?? 0}:${snapshot.restoreRevision}`
+    if (key !== undefined && key !== lastRestoreKey.current && snapshot.restoredParameters && snapshot.restoredOverrides) {
+      setParameters(restoreParameters(snapshot.restoredParameters, snapshot.restoredOverrides))
+    }
+    lastRestoreKey.current = key
+  }, [snapshot.workerGeneration, snapshot.restoreRevision, snapshot.restoredParameters, snapshot.restoredOverrides])
+  const { eccentricity, semiMajorAxisKm } = parameters.values
+  const updateParameter = (key: keyof SimulationParameters, value: number) => setParameters(current => editParameter(current, key, value))
   const latest = snapshot.samples[snapshot.samples.length - 1]
   const isActive = snapshot.status === 'running'
+  const workerAvailable = snapshot.workerAvailable !== false
   return <main className="app-shell">
     <header className="app-header">
       <div className="brand"><div className="brand-icon"><span /></div><div><strong>Europa Engine</strong><small>ORBITAL & INTERIOR DYNAMICS</small></div></div>
-      <div className="header-actions"><span className="prototype-label"><span /> RESEARCH PROTOTYPE</span><button className="utility-button" onClick={onLoadCheckpoint} disabled={!onLoadCheckpoint}>Open checkpoint</button><button className="utility-button" onClick={onSaveCheckpoint} disabled={!onSaveCheckpoint || snapshot.status === 'idle'}>Save checkpoint</button><button className="utility-button" onClick={onExport} disabled={!onExport || snapshot.samples.length === 0}>Export data</button></div>
+      <div className="header-actions"><span className="prototype-label"><span /> RESEARCH PROTOTYPE</span><button className="utility-button" onClick={onLoadCheckpoint} disabled={!onLoadCheckpoint}>Open checkpoint</button><button className="utility-button" onClick={onSaveCheckpoint} disabled={!onSaveCheckpoint || !workerAvailable || snapshot.samples.length === 0}>Save checkpoint</button><button className="utility-button" onClick={onExport} disabled={!onExport || !workerAvailable || snapshot.samples.length === 0}>Export data</button></div>
     </header>
     <div className="titlebar"><div><span className="section-kicker">SIMULATION WORKSPACE</span><h1>Europa dynamics</h1><p>Explore the relationship between orbital motion and Europa’s interior.</p></div><div className="status-chip"><span className={isActive ? 'status-dot active' : 'status-dot'} /> {snapshot.status === 'idle' ? 'Ready' : snapshot.status}</div></div>
     <div className="workspace-grid">
@@ -105,15 +129,15 @@ export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPaus
       <div className="right-column">
         <section className="panel orbit-panel" aria-labelledby="orbit-title"><div className="panel-heading"><div><h2 id="orbit-title">Orbit around Jupiter</h2><p>Initial conditions · schematic, not to scale</p></div><span className="orbit-key"><b /> INITIAL ORBIT</span></div><OrbitGraphic eccentricity={eccentricity}/></section>
         <section className="panel parameters-panel" aria-labelledby="parameters-title"><div className="panel-heading"><div><h2 id="parameters-title">Orbital parameters</h2><p>Changing inputs applies when you start a new run.</p></div></div>
-          <Parameter label="Eccentricity" symbol="e" value={eccentricity} min={0} max={0.1} step={0.0001} onChange={setEccentricity}/>
-          <Parameter label="Semi-major axis" symbol="a" value={semiMajorAxisKm} min={600000} max={800000} step={1000} units="km" onChange={setSemiMajorAxisKm}/>
+          <Parameter label="Eccentricity" symbol="e" value={eccentricity} min={0} max={0.1} onChange={value => updateParameter('eccentricity', value)}/>
+          <Parameter label="Semi-major axis" symbol="a" value={semiMajorAxisKm} min={600000} max={800000} units="km" onChange={value => updateParameter('semiMajorAxisKm', value)}/>
         </section>
         <section className="panel plot-panel" aria-labelledby="plot-title"><div className="panel-heading"><div><h2 id="plot-title">Orbital evolution</h2><p>Osculating eccentricity over simulated time</p></div><span className="plot-key"><b /> ECCENTRICITY</span></div><Plot samples={snapshot.samples}/><p className="plot-retention">Plot and export retain the latest 2,000 samples.</p></section>
       </div>
     </div>
     <div className="bottom-grid">
-      <section className="panel stats-panel"><div className="panel-heading"><div><h2>Run status</h2><p>Current orbital integration</p></div></div><div className="stats-grid"><div><span>SIMULATED TIME</span><strong>{formatDays(snapshot.timeSeconds)} <small>days</small></strong></div><div><span>ECCENTRICITY</span><strong>{latest ? latest.eccentricity.toFixed(5) : '—'}</strong></div><div><span>RESONANCE ANGLE</span><strong>{latest?.resonanceAngleDeg !== undefined && Number.isFinite(latest.resonanceAngleDeg) ? `${latest.resonanceAngleDeg.toFixed(1)}°` : '—'}</strong></div></div>{snapshot.message && <p className={snapshot.status === 'error' ? 'run-message error' : 'run-message'} role="status">{snapshot.message}</p>}</section>
-      <section className="panel control-panel"><div className="panel-heading"><div><h2>Simulation controls</h2><p>Orbital research prototype</p></div><span className="subtle-tag">FOUR-BODY</span></div><div className="control-buttons"><button className="primary-button" onClick={() => onStart?.({ eccentricity, semiMajorAxisKm })} disabled={!onStart || isActive}><span aria-hidden="true">▶</span> Start new run</button><button className="utility-button" onClick={onPause} disabled={!onPause || !['running', 'paused'].includes(snapshot.status)}>{snapshot.status === 'paused' ? 'Resume' : 'Pause'}</button><button className="utility-button" onClick={onReset} disabled={!onReset || snapshot.status === 'idle'}>Reset</button></div><div className="gpu-status">{snapshot.gpuStatus || 'GPU compute: not connected'}</div></section>
+      <section className="panel stats-panel"><div className="panel-heading"><div><h2>Run status</h2><p>Current orbital integration</p></div></div><div className="stats-grid"><div><span>SIMULATED TIME</span><strong>{formatDays(snapshot.timeSeconds)} <small>days</small></strong></div><div><span>ECCENTRICITY</span><strong>{latest ? latest.eccentricity.toFixed(5) : '—'}</strong></div><div><span>RESONANCE ANGLE</span><strong>{latest?.resonanceAngleDeg !== undefined && Number.isFinite(latest.resonanceAngleDeg) ? `${latest.resonanceAngleDeg.toFixed(1)}°` : '—'}</strong></div></div>{snapshot.provenance === 'imported-unverified' && <p className="run-message">Imported checkpoint · origin and trajectory unverified</p>}{snapshot.message && <p className={snapshot.status === 'error' ? 'run-message error' : 'run-message'} role="status">{snapshot.message}</p>}</section>
+      <section className="panel control-panel"><div className="panel-heading"><div><h2>Simulation controls</h2><p>Orbital research prototype</p></div><span className="subtle-tag">FOUR-BODY</span></div><div className="control-buttons"><button className="primary-button" onClick={() => onStart?.(parameters.overrides)} disabled={!onStart || isActive}><span aria-hidden="true">▶</span> Start new run</button><button className="utility-button" onClick={onPause} disabled={!onPause || !workerAvailable || !['running', 'paused'].includes(snapshot.status)}>{snapshot.status === 'paused' ? 'Resume' : 'Pause'}</button><button className="utility-button" onClick={onReset} disabled={!onReset || !workerAvailable || snapshot.status === 'idle'}>Reset</button></div><div className="gpu-status">{snapshot.gpuStatus || 'GPU compute: not connected'}</div></section>
     </div>
     <aside className="model-note"><span className="note-icon">i</span><p><strong>Model scope:</strong> This prototype currently exposes orbital dynamics only. The cutaway is illustrative; coupled 3D tidal, ocean, phase-change and self-gravity solvers are not yet available. Results are not mission predictions.</p></aside>
     <footer><span>EUROPA ENGINE <span className="footer-sep">/</span> RESEARCH PROTOTYPE</span><span>Local simulation <span className="footer-sep">·</span> Results depend on model assumptions</span></footer>
