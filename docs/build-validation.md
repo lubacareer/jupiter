@@ -33,17 +33,17 @@ without building, requiring approval, accessing the token or publishing.
 Native packages are unsigned. macOS public distribution additionally needs
 proper signing and notarization; these artifacts are for testing.
 
-For real GPU validation, a repository owner can manually dispatch **Hardware
-GPU validation** on a trusted, same-repository PR head. It checks the selected
-PR and commit before assigning work to a registered self-hosted runner with
-`gpu` and the selected `Windows`, `Linux`, or `macOS` labels. Register only
-short-lived isolated runners; never use this workflow for untrusted PR code.
-In a public personal repository, any eligible workflow may target a registered
-self-hosted runner: an ephemeral runner and this workflow's checks do not restrict
-which job can reach it. Do not register a personal machine as a GPU runner.
-It builds the native unpacked application, runs its hardware test, and uploads `gpu-validation-report.json`. Provisioning,
-billing, cleanup, and release of associated storage and IP addresses remain
-manual; confirm the total quote against the approved budget before provisioning.
+For real GPU validation, check out the trusted PR commit on the target machine,
+then run `npm ci`, `npm run build`, `npx electron-builder --dir --publish never`,
+and `node electron/run-packaged-gpu.cjs`. Inspect the resulting
+`gpu-validation-report.json`. The manually dispatched **Prepare manual GPU
+validation (no GPU test)** workflow verifies the selected PR and commit and displays these instructions; it
+does not run a GPU test or report a hardware pass. This public personal repository
+cannot restrict a self-hosted runner to a particular workflow. Do not register a
+personal machine as a GPU runner; an ephemeral runner alone does not restrict
+which job can reach it. Provisioning, billing, cleanup, and release of associated
+storage and IP addresses remain manual; confirm the total quote against the
+approved budget before provisioning.
 Linux hardware validation remains outstanding: the packaged WSLg test did not
 find a WebGPU adapter, even when Vulkan and Wayland were enabled. A CUDA-capable
 device alone does not establish that Electron can use WebGPU.
