@@ -4,3 +4,5 @@ dist-electron/
 release/
 coverage/
 *.log
+
+gpu-validation-report.json

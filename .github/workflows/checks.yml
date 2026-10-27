@@ -5,12 +5,20 @@ on:
 permissions:
   contents: read
 jobs:
-  test:
+  test-and-package:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact: linux
+          - os: windows-latest
+            artifact: windows
+          - os: macos-latest
+            artifact: macos
     runs-on: ${{ matrix.os }}
+    env:
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
     steps:
       - uses: actions/checkout@v4
         with:
@@ -22,3 +30,24 @@ jobs:
       - run: npm ci
       - run: npm test
       - run: npm run build
+      # Build on the target OS; signing and public distribution are separate steps.
+      - run: npx electron-builder --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: europa-engine-${{ matrix.artifact }}-${{ github.sha }}
+          path: |
+            release/*.exe
+            release/*.dmg
+            release/*.AppImage
+            release/*.deb
+          if-no-files-found: error
+
+  linux-build-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - run: docker build --tag europa-engine-build:ci .
+      - run: docker run --rm europa-engine-build:ci npm test
+      - run: docker run --rm europa-engine-build:ci npm run build

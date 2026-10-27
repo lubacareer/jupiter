@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { MoonView } from './MoonView'
 import { createInitialOrbit, orbitDiagnostics } from '../simulation/orbit'
 import { createParameterState, editParameter, restoreParameters, type SimulationParameters, type ParameterOverrides } from './parameterState'
+import { GpuPanel, type GpuFileBridge } from './GpuPanel'
 
 export type { SimulationParameters, ParameterOverrides } from './parameterState'
 export type SimulationSample = { timeSeconds: number; eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg?: number }
@@ -21,6 +22,7 @@ export type SimulationSnapshot = {
   checksumStatus?: 'verified' | 'unavailable'
 }
 export type WorkspaceProps = {
+  gpuBridge?: GpuFileBridge
   snapshot?: SimulationSnapshot
   onStart?: (params: ParameterOverrides) => void
   onPause?: () => void
@@ -109,7 +111,7 @@ function Parameter({ label, symbol, value, min, max, units, onChange }: { label:
   </div>
 }
 
-export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPause, onReset, onExport, onSaveCheckpoint, onLoadCheckpoint }: WorkspaceProps) {
+export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPause, onReset, onExport, onSaveCheckpoint, onLoadCheckpoint, gpuBridge }: WorkspaceProps) {
   const [parameters, setParameters] = useState(() => createParameterState(snapshot.defaultParameters ?? EPOCH_PARAMETERS))
   const lastRestoreKey = useRef<string | undefined>(undefined)
   useEffect(() => {
@@ -149,7 +151,8 @@ export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPaus
       <section className="panel stats-panel"><div className="panel-heading"><div><h2>Run status</h2><p>Current orbital integration</p></div></div><div className="stats-grid"><div><span>SIMULATED TIME</span><strong>{formatDays(snapshot.timeSeconds)} <small>days</small></strong></div><div><span>ECCENTRICITY</span><strong>{latest ? latest.eccentricity.toFixed(5) : '—'}</strong></div><div><span>RESONANCE ANGLE</span><strong>{latest?.resonanceAngleDeg !== undefined && Number.isFinite(latest.resonanceAngleDeg) ? `${latest.resonanceAngleDeg.toFixed(1)}°` : '—'}</strong></div></div>{snapshot.provenance === 'imported-unverified' && <p className="run-message">Imported checkpoint{snapshot.checksumStatus === 'verified' ? ' · checksum verified at load' : snapshot.checksumStatus === 'unavailable' ? ' · checksum unavailable' : ''} · origin and trajectory unverified</p>}{snapshot.message && <p className={snapshot.status === 'error' ? 'run-message error' : 'run-message'} role="status">{snapshot.message}</p>}</section>
       <section className="panel control-panel"><div className="panel-heading"><div><h2>Simulation controls</h2><p>Orbital research prototype</p></div><span className="subtle-tag">FOUR-BODY</span></div><div className="control-buttons"><button className="primary-button" onClick={() => onStart?.(parameters.overrides)} disabled={!onStart || isActive}><span aria-hidden="true">▶</span> Start new run</button><button className="utility-button" onClick={onPause} disabled={!onPause || !workerAvailable || !['running', 'paused'].includes(snapshot.status)}>{snapshot.status === 'paused' ? 'Resume' : 'Pause'}</button><button className="utility-button" onClick={onReset} disabled={!onReset || !workerAvailable || snapshot.status === 'idle'}>Reset</button></div><div className="gpu-status">{snapshot.gpuStatus || 'GPU compute: not connected'}</div></section>
     </div>
-    <aside className="model-note"><span className="note-icon">i</span><p><strong>Model scope:</strong> This prototype currently exposes orbital dynamics only. The cutaway is illustrative; coupled 3D tidal, ocean, phase-change and self-gravity solvers are not yet available. Results are not mission predictions.</p></aside>
+    {gpuBridge && <GpuPanel parameters={parameters.overrides} bridge={gpuBridge} />}
+    <aside className="model-note"><span className="note-icon">i</span><p><strong>Model scope:</strong> The CPU and GPU orbital models and the synthetic thermal experiment are independent. The cutaway is illustrative; coupled 3D tidal, ocean and self-gravity solvers are not yet available. Results are not mission predictions.</p></aside>
     <footer><span>EUROPA ENGINE <span className="footer-sep">/</span> RESEARCH PROTOTYPE</span><span>Local simulation <span className="footer-sep">·</span> Results depend on model assumptions</span></footer>
   </main>
 }

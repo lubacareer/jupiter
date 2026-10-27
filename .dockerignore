@@ -1,0 +1,15 @@
+.git
+.github
+node_modules
+dist
+dist-electron
+release
+coverage
+*.log
+.env
+.env.*
+**/.env
+**/.env.*
+**/*.pem
+**/*.key
+gpu-validation-report.json

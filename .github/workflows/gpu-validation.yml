@@ -1,0 +1,70 @@
+name: Hardware GPU validation
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open same-repository PR number (select its trusted head branch)
+        required: true
+        type: string
+      platform:
+        description: Native platform of the registered GPU runner
+        required: true
+        type: choice
+        options:
+          - Windows
+          - Linux
+          - macOS
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  verify:
+    # Never automatically run PR or fork code on a self-hosted machine.
+    if: github.repository == 'lubacareer/jupiter' && github.actor == github.repository_owner && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    outputs:
+      sha: ${{ steps.check.outputs.sha }}
+    steps:
+      - id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+          SELECTED_SHA: ${{ github.sha }}
+          SELECTED_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'PR number must be a positive integer.' >&2; exit 1; }
+          pr=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")
+          jq -e --arg repo "$REPOSITORY" --arg sha "$SELECTED_SHA" --arg ref "$SELECTED_REF" \
+            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha and .head.ref == $ref' <<< "$pr" >/dev/null \
+            || { echo 'Select the current head branch of an open same-repository PR targeting main.' >&2; exit 1; }
+          echo "sha=$SELECTED_SHA" >> "$GITHUB_OUTPUT"
+  gpu:
+    needs: verify
+    runs-on: [self-hosted, '${{ inputs.platform }}', gpu]
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.verify.outputs.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.22.2'
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - name: Build unsigned native application
+        run: npx electron-builder --dir --publish never
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      - name: Validate packaged application on hardware
+        run: node electron/run-packaged-gpu.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gpu-validation-${{ inputs.platform }}-${{ needs.verify.outputs.sha }}
+          path: gpu-validation-report.json
+          if-no-files-found: error
