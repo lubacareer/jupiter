@@ -1,0 +1,58 @@
+name: Publish Linux build image
+on:
+  workflow_dispatch:
+    inputs:
+      pr_number:
+        description: Open pull request number whose trusted same-repository head should be published
+        required: true
+        type: string
+permissions:
+  contents: read
+  pull-requests: read
+jobs:
+  publish:
+    # Deliberately manual: a repository maintainer must select and trust the branch.
+    # Do not attach Docker Hub credentials to pull_request workflows or fork code.
+    if: github.repository == 'lubacareer/jupiter' && github.actor == github.repository_owner && github.ref_type == 'branch'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Verify selected branch is the head of an open, same-repository PR
+        id: verify
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ inputs.pr_number }}
+          REPOSITORY: ${{ github.repository }}
+          SELECTED_SHA: ${{ github.sha }}
+          SELECTED_REF: ${{ github.ref_name }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$PR_NUMBER" =~ ^[1-9][0-9]*$ ]] || { echo 'PR number must be a positive integer.' >&2; exit 1; }
+          pr=$(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER")
+          jq -e --arg repo "$REPOSITORY" --arg sha "$SELECTED_SHA" --arg ref "$SELECTED_REF" \
+            '.state == "open" and .base.ref == "main" and .head.repo.full_name == $repo and .head.sha == $sha and .head.ref == $ref' <<< "$pr" >/dev/null \
+            || { echo 'Select the current head branch of an open same-repository PR targeting main.' >&2; exit 1; }
+          echo "tag=pr-${PR_NUMBER}-${SELECTED_SHA}-run-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Build and test image before providing registry credentials
+        run: |
+          docker build --tag europa-engine-build:verify .
+          docker run --rm europa-engine-build:verify npm test
+          docker run --rm europa-engine-build:verify npm run build
+      - name: Authenticate to Docker Hub
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Push uniquely tagged build image
+        env:
+          IMAGE_TAG: ${{ steps.verify.outputs.tag }}
+        run: |
+          set -euo pipefail
+          image="lubani27/europa-engine:$IMAGE_TAG"
+          docker tag europa-engine-build:verify "$image"
+          docker push "$image"
+          echo "Published $image" >> "$GITHUB_STEP_SUMMARY"
