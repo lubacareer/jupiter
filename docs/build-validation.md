@@ -13,6 +13,10 @@ instances for these checks. GitHub's artifact and cache storage is subject to
 account allowances and billing settings; check usage and budgets rather than
 assuming unlimited storage. Docker Hub Personal supports public repositories
 subject to pull-rate limits and fair-use terms. Provider limits may change.
+To prevent metered GitHub Actions overages for this repository, review your
+[GitHub billing budgets](https://docs.github.com/en/billing/how-tos/set-up-budgets)
+and configure a repository-scoped budget with usage stopped at its limit if your
+account offers that control. A budget cannot undo usage already accrued.
 
 `Dockerfile` defines a Linux Node/Electron build-and-test environment containing
 the source at the selected commit. Build it with `docker build -t europa-engine-build .`;
