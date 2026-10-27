@@ -1,0 +1,13 @@
+# Orbital model and provenance
+
+The orbital module integrates four point masses (Jupiter, Io, Europa and Ganymede) using double-precision velocity Verlet. Positions are kilometres, velocities kilometres per second and gravitational parameters km³/s². Time is SI seconds relative to the initial epoch. The integrator is reversible and symplectic for its autonomous point-mass equations; choose and verify a suitable timestep for the case under study.
+
+Initial geometric Cartesian states were obtained from [NASA/JPL Horizons](https://ssd.jpl.nasa.gov/horizons/), with targets 501, 502 and 503, centre `500@599` (Jupiter centre), epoch JD 2460676.5 TDB (2025-01-01 00:00:00 TDB), ICRF reference frame, `REF_PLANE=FRAME`, `VEC_TABLE=2`, and `OUT_UNITS=KM-S`. Horizons identified the source as `jup365_merged`. Jupiter's initial relative state is zero; all four states are then translated into their own centre-of-mass frame, which leaves all relative vectors unchanged. GM values come from JPL's [planetary satellite physical parameters](https://ssd.jpl.nasa.gov/sats/phys_par/) (JUP365).
+
+The initial conditions are from an ephemeris, but subsequent results are **not JPL ephemerides**. This simplified model omits Callisto, the Sun, Jupiter's oblateness, tides, dissipation, body rotation, relativity and all tidal back-reaction. These omissions especially affect the resonance and long-term trajectories. Do not use this model for mission navigation or infer validated long-term predictions from it.
+
+Europa's displayed osculating semi-major axis and eccentricity are derived from the instantaneous Jupiter-relative state and their combined GM. The Laplace angle is the wrapped angle λIo − 3λEuropa + 2λGanymede, using osculating mean longitudes in ICRF. It is a diagnostic, not a claim of libration. Energy and angular momentum diagnostics use GM as the mass weight (physical totals multiplied by G), allowing meaningful relative conservation checks without selecting a numerical G.
+
+Editing Europa's eccentricity or semi-major axis reconstructs a consistent bound two-body osculating ellipse at the initial true anomaly and orbital-plane orientation, then re-centres the four-body system. This is a new hypothetical state, not an ephemeris observation. A changed initial orbit invalidates existing integration results.
+
+Tests cover initial values, edits, reversibility, a two-body circular orbit, four-body conservation, and timestep refinement. These are numerical checks of the stated simplified equations, not scientific validation of the full Europa system.
