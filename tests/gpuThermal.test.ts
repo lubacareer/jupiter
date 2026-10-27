@@ -1,5 +1,5 @@
 ﻿import { describe, expect, it, vi } from 'vitest';
-import { createInteriorState, interiorDiagnostics } from '../src/simulation/interior';
+import { createInteriorState, interiorDiagnostics, stepInterior } from '../src/simulation/interior';
 import { compareThermalStates, createGpuThermal, defaultGpuThermalConfig } from '../src/simulation/gpuThermal';
 import { createGpuCheckpoint, exportGpuResult, parseGpuCheckpoint } from '../src/simulation/gpuCheckpoint';
 
@@ -76,6 +76,51 @@ describe('experimental GPU thermal comparisons', () => {
     expect(second.referenceEnthalpy).toEqual(first.referenceEnthalpy);
     expect(second.errors.maxTemperatureKelvin).toBe(0);
     session.destroy(); restored.destroy();
+  });
+
+  it('validates reference energy against baseline and cumulative heat before allocating GPU buffers', async () => {
+    const config = uniformConfig();
+    const session = await createGpuThermal(fakeDevice().device, config);
+    const saved = session.snapshot();
+    const scale = config.state.material.density * config.state.material.latentHeat * config.state.enthalpy.length *
+      config.state.grid.dx * config.state.grid.dy * config.state.grid.dz;
+
+    const withinTolerance = await createGpuThermal(fakeDevice().device, { ...saved, initialEnergy: saved.initialEnergy + scale * 0.00009 });
+    withinTolerance.destroy();
+    for (const invalid of [
+      { ...saved, initialEnergy: saved.initialEnergy + scale * 0.00011 },
+      { ...saved, cumulativeHeat: scale * 0.00011 },
+      { ...saved, initialEnergy: NaN },
+      { ...saved, initialEnergy: Infinity },
+      { ...saved, cumulativeHeat: -Infinity },
+      { ...saved, initialEnergy: Number.MAX_VALUE, cumulativeHeat: Number.MAX_VALUE },
+    ]) {
+      const fake = fakeDevice();
+      const createBuffer = vi.spyOn(fake.device, 'createBuffer');
+      await expect(createGpuThermal(fake.device, invalid)).rejects.toBeInstanceOf(RangeError);
+      expect(createBuffer).not.toHaveBeenCalled();
+    }
+
+    // A real CPU step with sources and outward flux gives a nonzero net heat.
+    const heated = defaultGpuThermalConfig();
+    const next = stepInterior(heated.state, heated.dt, heated.forcing);
+    const heat = interiorDiagnostics(next).energy - interiorDiagnostics(heated.state).energy;
+    const heatedSaved = { ...saved, grid: next.grid, material: next.material, time: next.time, dt: heated.dt,
+      forcing: { volumetricHeating: 0.5, topOutwardFlux: 2, bottomOutwardFlux: -0.5 },
+      referenceEnthalpy: Array.from(next.enthalpy), gpuEnthalpy: Array.from(Float32Array.from(next.enthalpy)), cumulativeHeat: heat };
+    expect(heat).not.toBe(0);
+    const restored = await createGpuThermal(fakeDevice().device, heatedSaved);
+    expect(restored.snapshot().cumulativeHeat).toBe(heat);
+    restored.destroy(); session.destroy();
+  });
+
+  it('rejects new configurations with non-finite total energy', async () => {
+    const config = uniformConfig();
+    config.state.grid = { ...config.state.grid, dx: 1e103, dy: 1e103, dz: 1e103 };
+    const fake = fakeDevice();
+    const createBuffer = vi.spyOn(fake.device, 'createBuffer');
+    await expect(createGpuThermal(fake.device, config)).rejects.toBeInstanceOf(RangeError);
+    expect(createBuffer).not.toHaveBeenCalled();
   });
 
   it('rejects a mismatched field without replacing the accepted state', async () => {

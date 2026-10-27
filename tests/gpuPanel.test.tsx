@@ -41,6 +41,7 @@ describe('GPU experiment UI', () => {
     first.emit({ type: 'snapshot', snapshot: { status: 'paused', mode: 'thermal', thermal: data.data, history: data.history, device: 'test GPU', provenance: 'local' } })
     expect((screen.getByRole('button', { name: 'Save GPU checkpoint' }) as HTMLButtonElement).disabled).toBe(false)
     act(() => first.onerror?.())
+    expect(first.terminate).toHaveBeenCalledTimes(1)
     expect(screen.getByText(/in-memory results were lost/i)).toBeTruthy()
     expect((screen.getByRole('button', { name: 'Save GPU checkpoint' }) as HTMLButtonElement).disabled).toBe(true)
     expect((screen.getByRole('button', { name: 'Start GPU orbit' }) as HTMLButtonElement).disabled).toBe(true)
@@ -50,6 +51,8 @@ describe('GPU experiment UI', () => {
     expect(first.terminate).toHaveBeenCalled()
     const second = MockWorker.instances[1]
     expect(second.postMessage).toHaveBeenCalledWith({ type: 'probe' })
+    act(() => first.onerror?.())
+    expect(second.terminate).not.toHaveBeenCalled()
     fireEvent.click(screen.getByRole('button', { name: 'Start GPU orbit' }))
     expect(second.postMessage).toHaveBeenCalledWith({ type: 'start-orbit', parameters: {} })
   })

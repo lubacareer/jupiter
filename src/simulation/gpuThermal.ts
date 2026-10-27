@@ -46,11 +46,22 @@ function requireFinite(n: number, name: string): void {
   if (!Number.isFinite(n)) throw new RangeError(`${name} must be finite`);
 }
 
+/** Shared scale for energy conservation and GPU/reference comparisons. */
+function thermalEnergyScale(reference: InteriorState, initialEnergy: number, cumulativeHeat: number): number {
+  requireFinite(initialEnergy, 'initialEnergy');
+  requireFinite(cumulativeHeat, 'cumulativeHeat');
+  const { dx, dy, dz } = reference.grid;
+  const volume = dx * dy * dz * reference.enthalpy.length;
+  const latentEnergy = reference.material.density * reference.material.latentHeat * volume;
+  requireFinite(volume, 'thermal volume');
+  requireFinite(latentEnergy, 'latent energy');
+  return Math.max(latentEnergy, Math.abs(initialEnergy), Math.abs(cumulativeHeat), 1);
+}
+
 /** Compare every cell and the integrated energy in SI units. */
 export function compareThermalStates(reference: InteriorState, gpuEnthalpy: ArrayLike<number>, initialEnergy: number, cumulativeHeat: number): ThermalErrors {
   if (gpuEnthalpy.length !== reference.enthalpy.length) throw new RangeError('GPU field length does not match the reference');
-  requireFinite(initialEnergy, 'initialEnergy');
-  requireFinite(cumulativeHeat, 'cumulativeHeat');
+  const energyScale = thermalEnergyScale(reference, initialEnergy, cumulativeHeat);
   let maxTemperatureKelvin = 0;
   let maxLiquidFraction = 0;
   let gpuEnergyDensity = 0;
@@ -66,9 +77,7 @@ export function compareThermalStates(reference: InteriorState, gpuEnthalpy: Arra
   }
   const { dx, dy, dz } = reference.grid;
   const cellVolume = dx * dy * dz;
-  const volume = cellVolume * reference.enthalpy.length;
   const referenceEnergy = interiorDiagnostics(reference).energy;
-  const energyScale = Math.max(reference.material.density * reference.material.latentHeat * volume, Math.abs(initialEnergy), Math.abs(cumulativeHeat), 1);
   const normalizedEnergy = Math.abs(gpuEnergyDensity * cellVolume - referenceEnergy) / energyScale;
   return { maxTemperatureKelvin, maxLiquidFraction, normalizedEnergy };
 }
@@ -141,8 +150,16 @@ export async function createGpuThermal(device: GPUDevice, input: GpuThermalConfi
   const gpuInitial = restored ? Float32Array.from(input.gpuEnthalpy) : Float32Array.from(state.enthalpy);
   if (gpuInitial.length !== count) throw new RangeError('GPU field length does not match grid');
   for (const n of heating) requireFinite(n, 'GPU heating');
-  const initialEnergy = restored ? input.initialEnergy : interiorDiagnostics(state).energy;
+  const referenceEnergy = interiorDiagnostics(state).energy;
+  requireFinite(referenceEnergy, 'reference energy');
+  const initialEnergy = restored ? input.initialEnergy : referenceEnergy;
   let cumulativeHeat = restored ? input.cumulativeHeat : 0;
+  const energyScale = thermalEnergyScale(state, initialEnergy, cumulativeHeat);
+  const expectedEnergy = initialEnergy + cumulativeHeat;
+  requireFinite(expectedEnergy, 'expected energy');
+  const energyDifference = Math.abs(referenceEnergy - expectedEnergy);
+  requireFinite(energyDifference, 'energy difference');
+  if (energyDifference / energyScale > THERMAL_LIMITS.normalizedEnergy) throw new RangeError('Thermal energy accounting does not match the reference state');
   let reference: InteriorState = state;
   let acceptedGpu = gpuInitial;
   let errors = compareThermalStates(reference, acceptedGpu, initialEnergy, cumulativeHeat);

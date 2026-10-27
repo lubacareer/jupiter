@@ -46,6 +46,15 @@ describe('GPU worker command ordering', () => {
     expect(session.dispose).not.toHaveBeenCalled();
   });
 
+  it('keeps an active run when a thermal checkpoint fails energy accounting', async () => {
+    send({ type: 'start-orbit', parameters: {} }); await flush();
+    mocks.createThermal.mockRejectedValue(new RangeError('Thermal energy accounting does not match the reference state'));
+    send({ type: 'load', checkpoint: { mode: 'thermal', data: {}, history: [{ timeSeconds: 0, error: 0 }] } }); await flush();
+    expect(snapshots().at(-1).status).toBe('running');
+    expect(snapshots().at(-1).message).toMatch(/energy accounting/);
+    expect(session.dispose).not.toHaveBeenCalled();
+  });
+
   it('does not start a second GPU step when paused and resumed during a pending step', async () => {
     const step = deferred<typeof sample>();
     session.advance.mockReturnValue(step.promise);

@@ -46,6 +46,7 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
     }
     instance.onerror = () => {
       if (worker.current !== instance) return
+      instance.terminate()
       worker.current = null
       setWorkerFailed(true)
       const failed: GpuWorkerSnapshot = { status: 'error', history: [], provenance: 'local', message: 'GPU worker exited; in-memory results were lost. Retry to start a fresh worker.' }
