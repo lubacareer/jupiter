@@ -12,16 +12,23 @@ with `docker run --rm europa-engine-build npm run build`. The image is not a
 containerized GUI app or a substitute for a hardware GPU test.
 
 The manually dispatched **Publish Linux build image** workflow publishes to
-`lubani27/europa-engine` only after its build and tests pass. Select a trusted
-branch which is the current head of an open, same-repository PR targeting main,
-and enter that PR number. Never run this workflow with untrusted code: the
-selected commit's build scripts execute before publishing. Configure the
-`DOCKERHUB_USERNAME` and `DOCKERHUB_TOKEN` repository secrets in GitHub, not in
-source files. Tags include the PR number, full commit SHA, workflow run ID and
-attempt; they are never `latest`. Configure Docker Hub immutable-tag protection
+`lubani27/europa-engine` only after its build and tests pass. Dispatch from
+`main` as the repository owner, specifying an open same-repository PR and its
+exact reviewed 40-character head SHA. Build and test run on a separate runner
+before the publication job receives credentials; the PR head is checked again
+after environment approval. Configure the `docker-publish` GitHub environment
+to allow only `main` and require owner review, and store `DOCKERHUB_USERNAME`
+and a narrowly scoped `DOCKERHUB_TOKEN` as environment secrets. Never store the
+token as a repository or organization secret. Verify the environment protections
+before adding the token: GitHub can create an unprotected environment when a
+workflow references a missing one. Tags include the PR number, full commit SHA,
+workflow run ID and attempt; they are never `latest`. Configure Docker Hub immutable-tag protection
 with the regular expression `^pr-.*$`, and record the returned image digest when
 consuming the image. A unique tag alone cannot prevent a
 registry user from overwriting it.
+
+Use `validate_only=true` when dispatching to check the PR and expected SHA
+without building, requiring approval, accessing the token or publishing.
 
 Native packages are unsigned. macOS public distribution additionally needs
 proper signing and notarization; these artifacts are for testing.
@@ -30,7 +37,10 @@ For real GPU validation, a repository owner can manually dispatch **Hardware
 GPU validation** on a trusted, same-repository PR head. It checks the selected
 PR and commit before assigning work to a registered self-hosted runner with
 `gpu` and the selected `Windows`, `Linux`, or `macOS` labels. Register only
-short-lived trusted runners; never use this workflow for untrusted PR code.
+short-lived isolated runners; never use this workflow for untrusted PR code.
+In a public personal repository, any eligible workflow may target a registered
+self-hosted runner: an ephemeral runner and this workflow's checks do not restrict
+which job can reach it. Do not register a personal machine as a GPU runner.
 It builds the native unpacked application, runs its hardware test, and uploads `gpu-validation-report.json`. Provisioning,
 billing, cleanup, and release of associated storage and IP addresses remain
 manual; confirm the total quote against the approved budget before provisioning.
