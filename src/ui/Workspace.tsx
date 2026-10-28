@@ -3,13 +3,16 @@ import { MoonView } from './MoonView'
 import { createInitialOrbit, orbitDiagnostics } from '../simulation/orbit'
 import { createParameterState, editParameter, restoreParameters, type SimulationParameters, type ParameterOverrides } from './parameterState'
 import { GpuPanel, type GpuFileBridge } from './GpuPanel'
+import { OrbitDiagnosticsView, OrbitView, type PlotSample } from './OrbitAnalysis'
+import type { OrbitalBaseline } from '../simulation/orbitAnalysis'
 
 export type { SimulationParameters, ParameterOverrides } from './parameterState'
-export type SimulationSample = { timeSeconds: number; eccentricity: number; semiMajorAxisKm: number; resonanceAngleDeg?: number }
+export type SimulationSample = PlotSample
 export type SimulationSnapshot = {
   status: 'idle' | 'running' | 'paused' | 'complete' | 'error'
   timeSeconds: number
   samples: SimulationSample[]
+  baseline?: OrbitalBaseline
   message?: string
   gpuStatus?: string
   workerAvailable?: boolean
@@ -36,50 +39,6 @@ const DEFAULT_SNAPSHOT: SimulationSnapshot = { status: 'idle', timeSeconds: 0, s
 const epochDiagnostics = orbitDiagnostics(createInitialOrbit())
 const EPOCH_PARAMETERS: SimulationParameters = { eccentricity: epochDiagnostics.eccentricity, semiMajorAxisKm: epochDiagnostics.semiMajorAxisKm }
 const formatDays = (seconds: number) => (seconds / 86400).toLocaleString(undefined, { maximumFractionDigits: 2 })
-
-function OrbitGraphic({ eccentricity }: { eccentricity: number }) {
-  const focus = 262 - Math.min(Math.max(eccentricity, 0), 1) * 211
-  return <svg className="orbit-graphic" viewBox="0 0 520 190" aria-label="Schematic of Europa's orbit around Jupiter" role="img">
-    <defs>
-      <radialGradient id="jupiter-fill" cx="32%" cy="28%"><stop stopColor="#e4c7aa" /><stop offset="0.68" stopColor="#a0785f" /><stop offset="1" stopColor="#4f3c37" /></radialGradient>
-      <linearGradient id="europa-fill" x2="1" y2="1"><stop stopColor="#eff8f9"/><stop offset="1" stopColor="#7e9ca9"/></linearGradient>
-    </defs>
-    <ellipse cx="262" cy="95" rx="211" ry="66" fill="none" stroke="#61758a" strokeWidth="1.2" strokeDasharray="6 6" />
-    <ellipse cx="262" cy="95" rx="211" ry={66 * Math.sqrt(1 - eccentricity * eccentricity)} fill="none" stroke="#ffb34e" strokeWidth="2" />
-    <g transform={`translate(${focus - 93},0)`}><circle cx="93" cy="95" r="37" fill="url(#jupiter-fill)" />
-    <path d="M58 83 Q92 76 128 84 M57 96 Q92 102 130 95 M62 109 Q93 117 124 108" fill="none" stroke="#e7c3a7" opacity=".38" strokeWidth="3"/>
-    <text x="93" y="151" textAnchor="middle" fill="#9dafc0" fontSize="11">JUPITER</text></g>
-    <circle cx="473" cy="95" r="10" fill="url(#europa-fill)" />
-    <text x="455" y="128" textAnchor="middle" fill="#9dafc0" fontSize="11">EUROPA</text>
-  </svg>
-}
-
-function Plot({ samples }: { samples: SimulationSample[] }) {
-  const finite = samples.filter(sample => Number.isFinite(sample.timeSeconds) && Number.isFinite(sample.eccentricity))
-  const width = 520, height = 165, left = 50, right = 16, top = 14, bottom = 30
-  const minT = finite.length ? finite[0].timeSeconds : 0
-  const maxT = finite.length > 1 ? finite[finite.length - 1].timeSeconds : minT + 86400
-  const minRaw = finite.length ? finite.reduce((min, sample) => Math.min(min, sample.eccentricity), Infinity) : 0
-  const maxRaw = finite.length ? finite.reduce((max, sample) => Math.max(max, sample.eccentricity), -Infinity) : 0.01
-  const padding = Math.max((maxRaw - minRaw) * .15, .0001)
-  const minY = Math.max(0, minRaw - padding), maxY = maxRaw + padding
-  const points = finite.map(p => `${left + (p.timeSeconds - minT) / (maxT - minT || 1) * (width - left - right)},${top + (maxY - p.eccentricity) / (maxY - minY || 1) * (height - top - bottom)}`).join(' ')
-  return <div className="chart-wrap">
-    {finite.length === 0 && <div className="chart-empty">Run the orbit model to generate data</div>}
-    <svg className="chart" viewBox={`0 0 ${width} ${height}`} role="img" aria-label="Plot of orbital eccentricity over simulated time">
-      {[0, 1, 2, 3].map(i => {
-        const y = top + i * (height - top - bottom) / 3
-        return <g key={i}><line x1={left} x2={width - right} y1={y} y2={y} stroke="#26394a"/><text x={left - 8} y={y + 3} textAnchor="end" fill="#849caf" fontSize="10">{(maxY - (maxY - minY) * i / 3).toFixed(4)}</text></g>
-      })}
-      <line x1={left} x2={left} y1={top} y2={height - bottom} stroke="#526779"/>
-      <line x1={left} x2={width - right} y1={height - bottom} y2={height - bottom} stroke="#526779"/>
-      {finite.length > 1 && <polyline points={points} fill="none" stroke="#55b8ff" strokeWidth="2.4" vectorEffect="non-scaling-stroke" />}
-      {finite.length === 1 && <circle cx={left} cy={top + (maxY - finite[0].eccentricity) / (maxY - minY) * (height - top - bottom)} r="3" fill="#55b8ff"/>}
-      <text x={left} y={height - 10} fill="#849caf" fontSize="10">{formatDays(minT)}</text>
-      <text x={width - right} y={height - 10} textAnchor="end" fill="#849caf" fontSize="10">{formatDays(maxT)} days</text>
-    </svg>
-  </div>
-}
 
 function Parameter({ label, symbol, value, min, max, units, onChange }: { label: string; symbol: string; value: number; min: number; max: number; units?: string; onChange: (value: number) => void }) {
   const id = `parameter-${symbol}`
@@ -139,12 +98,12 @@ export default function Workspace({ snapshot = DEFAULT_SNAPSHOT, onStart, onPaus
         <div className="moon-footnote">Interior geometry is illustrative and is not simulation output.</div>
       </section>
       <div className="right-column">
-        <section className="panel orbit-panel" aria-labelledby="orbit-title"><div className="panel-heading"><div><h2 id="orbit-title">Orbit around Jupiter</h2><p>Initial conditions · schematic, not to scale</p></div><span className="orbit-key"><b /> INITIAL ORBIT</span></div><OrbitGraphic eccentricity={eccentricity}/></section>
+        <section className="panel orbit-panel" aria-labelledby="orbit-title"><div className="panel-heading"><div><h2 id="orbit-title">CPU orbit around Jupiter</h2><p>Live four-body positions · point-mass model</p></div><span className="subtle-tag">CPU</span></div><OrbitView samples={snapshot.samples} label="CPU"/></section>
         <section className="panel parameters-panel" aria-labelledby="parameters-title"><div className="panel-heading"><div><h2 id="parameters-title">Orbital parameters</h2><p>Changing inputs applies when you start a new run.</p></div></div>
           <Parameter label="Eccentricity" symbol="e" value={eccentricity} min={0} max={0.1} onChange={value => updateParameter('eccentricity', value)}/>
           <Parameter label="Semi-major axis" symbol="a" value={semiMajorAxisKm} min={600000} max={800000} units="km" onChange={value => updateParameter('semiMajorAxisKm', value)}/>
         </section>
-        <section className="panel plot-panel" aria-labelledby="plot-title"><div className="panel-heading"><div><h2 id="plot-title">Orbital evolution</h2><p>Osculating eccentricity over simulated time</p></div><span className="plot-key"><b /> ECCENTRICITY</span></div><Plot samples={snapshot.samples}/><p className="plot-retention">Plot and export retain the latest 2,000 samples.</p></section>
+        <section className="panel plot-panel" aria-labelledby="plot-title"><div className="panel-heading"><div><h2 id="plot-title">CPU orbital evolution</h2><p>Osculating elements and resonance over simulated time</p></div></div><OrbitDiagnosticsView samples={snapshot.samples} baseline={snapshot.baseline} label="CPU"/></section>
       </div>
     </div>
     <div className="bottom-grid">

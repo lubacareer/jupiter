@@ -4,6 +4,7 @@ import { defaultGpuThermalConfig } from '../simulation/gpuThermal'
 import { phaseFromEnthalpy } from '../simulation/interior'
 import type { GpuWorkerCommand, GpuWorkerEvent, GpuWorkerSnapshot } from '../simulation/gpuProtocol'
 import type { ParameterOverrides } from './parameterState'
+import { OrbitDiagnosticsView, OrbitView } from './OrbitAnalysis'
 
 export interface GpuFileBridge {
   saveGpuDocument: (kind: 'checkpoint' | 'export', document: object) => Promise<boolean>
@@ -93,6 +94,11 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       <button className="utility-button" disabled={!hasResult} onClick={() => send({ type: 'export' })}>Export GPU data</button>
     </div>
     {snapshot.orbit && <p>Orbit: {(snapshot.orbit.state.timeSeconds / 86400).toFixed(3)} days · step {snapshot.orbit.steps} / {snapshot.orbit.maxSteps} · CPU position difference {snapshot.orbit.errorKm.toFixed(4)} km (limit 10 km).</p>}
+    {snapshot.mode === 'orbit' && snapshot.orbit && <div className="gpu-orbit-analysis">
+      <h3>GPU orbit around Jupiter</h3><p>Accepted GPU positions · independent from the CPU workspace</p>
+      <OrbitView samples={snapshot.orbitAnalysisSamples ?? []} label="GPU"/>
+      <OrbitDiagnosticsView samples={snapshot.orbitAnalysisSamples ?? []} baseline={snapshot.orbitAnalysisBaseline} label="GPU"/>
+    </div>}
     {snapshot.thermal && <p>Thermal: {snapshot.thermal.time.toFixed(3)} s · maximum temperature difference {snapshot.thermal.errors.maxTemperatureKelvin.toPrecision(3)} K · liquid fraction difference {snapshot.thermal.errors.maxLiquidFraction.toPrecision(3)} · normalized energy difference {snapshot.thermal.errors.normalizedEnergy.toPrecision(3)}.</p>}
     {thermalSummary && <p>Synthetic field: {thermalSummary.min.toFixed(3)}–{thermalSummary.max.toFixed(3)} K · mean liquid fraction {thermalSummary.meanLiquid.toFixed(4)}.</p>}
     {history.length > 1 && <svg viewBox="0 0 500 100" className="chart" role="img" aria-label={snapshot.mode === 'orbit' ? 'GPU orbital position error over time' : 'GPU thermal temperature error over time'}><line x1="10" y1="90" x2="490" y2="90" stroke="#526779"/><polyline points={historyPoints} fill="none" stroke="#55b8ff" strokeWidth="2"/><text x="10" y="12" fill="#849caf" fontSize="10">Maximum shown: {maximumError.toPrecision(3)} {snapshot.mode === 'orbit' ? 'km' : 'K'}</text></svg>}

@@ -67,7 +67,7 @@ describe('simulation process', () => {
     receive({ data: { type: 'start', parameters: {} } });
     receive({ data: { type: 'getCheckpoint' } });
     const original = sent.at(-1)?.checkpoint as { version: number; state: ReturnType<typeof createInitialOrbit>; parameters: { eccentricity: number; semiMajorAxisKm: number }; initialOverrides: Record<string, number>; provenance: string };
-    expect(original.version).toBe(3);
+    expect(original.version).toBe(4);
     expect(original.state).toEqual(createInitialOrbit());
     expect(original.initialOverrides).toEqual({});
     expect(original.provenance).toBe('local');
@@ -101,7 +101,7 @@ describe('simulation process', () => {
     expect(loaded.provenance).toBe('imported-unverified');
     receive({ data: { type: 'getExport' } });
     const output = sent.at(-1)?.checkpoint as { version: number; provenance: string; initialOverrides: unknown };
-    expect(output.version).toBe(3);
+    expect(output.version).toBe(4);
     expect(output.provenance).toBe('imported-unverified');
     expect(output.initialOverrides).toEqual(loaded.restoredParameters);
     receive({ data: { type: 'pause' } });
@@ -127,7 +127,7 @@ describe('simulation process', () => {
     expect(loaded.restoredOverrides).toEqual({ eccentricity: 0.02 });
     receive({ data: { type: 'getCheckpoint' } });
     const normalized = sent.at(-1)?.checkpoint as { version: number; parameters: unknown; initialOverrides: unknown };
-    expect(normalized.version).toBe(3);
+    expect(normalized.version).toBe(4);
     expect(normalized.parameters).toEqual(original.parameters);
     expect(normalized.initialOverrides).toEqual({ eccentricity: 0.02 });
     receive({ data: { type: 'load', checkpoint: { ...legacyV2(normalized), parameters: { ...original.parameters, extra: true } } } });
@@ -147,35 +147,41 @@ describe('simulation process', () => {
     expect(restoredAgain.provenance).toBe('imported-unverified');
     expect(restoredAgain.restoredOverrides).toEqual({ eccentricity: 0.02 });
   });
-  it.each([1, 2, 3])('discards unknown state, body and sample fields from v%i imports', (version) => {
+  it.each([1, 2, 3, 4])('discards unknown state, body and sample fields from v%i imports', (version) => {
     receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });
     vi.advanceTimersByTime(100);
     receive({ data: { type: 'getCheckpoint' } });
     const original = sent.at(-1)?.checkpoint as any;
     const incoming = structuredClone(version === 1
       ? { version: 1, state: original.state, parameters: original.parameters, samples: original.samples }
-      : version === 2 ? legacyV2(original) : original);
+      : version === 2 ? legacyV2(original) : version === 3 ? { ...original, version: 3 } : original);
     incoming.state.extra = 'unknown state field';
     for (const body of incoming.state.bodies) body.extra = 'unknown body field';
     for (const sample of incoming.samples) sample.extra = 'unknown sample field';
-    if (version === 3) {
+    if (version === 3 || version === 4) {
       const { checksum: _checksum, ...payload } = incoming;
       incoming.checksum.digest = checkpointDigest(payload);
     }
 
     receive({ data: { type: 'load', checkpoint: incoming } });
-    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: version === 3 ? 'verified' : 'unavailable' });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: version >= 3 ? 'verified' : 'unavailable' });
     receive({ data: { type: 'getCheckpoint' } });
     const normalized = sent.at(-1)?.checkpoint as any;
     expect(normalized.state).toEqual(original.state);
-    expect(normalized.samples).toEqual(original.samples);
+    expect(normalized.samples.map(({ timeSeconds, eccentricity, semiMajorAxisKm, resonanceAngleDeg }: any) => ({ timeSeconds, eccentricity, semiMajorAxisKm, resonanceAngleDeg }))).toEqual(
+      original.samples.map(({ timeSeconds, eccentricity, semiMajorAxisKm, resonanceAngleDeg }: any) => ({ timeSeconds, eccentricity, semiMajorAxisKm, resonanceAngleDeg })));
+    if (version < 4) {
+      expect(normalized.samples[0].positionsKm).toBeUndefined();
+      expect(normalized.samples.at(-1).energyDrift).toBe(0);
+      expect(normalized.baseline.kind).toBe('restored');
+    } else expect(normalized.samples).toEqual(original.samples);
     expect(normalized.provenance).toBe('imported-unverified');
     const { checksum, ...payload } = normalized;
     expect(checksum).toEqual({ algorithm: 'sha256', digest: checkpointDigest(payload) });
     receive({ data: { type: 'getExport' } });
     const exported = makeExport(sent.at(-1)?.checkpoint);
     expect(exported.state).toEqual(original.state);
-    expect(exported.samples).toEqual(original.samples);
+    expect(exported.samples).toEqual(normalized.samples);
     expect(exported.provenance).toBe('imported-unverified');
     receive({ data: { type: 'load', checkpoint: normalized } });
     expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified' });
@@ -204,7 +210,7 @@ describe('simulation process', () => {
       expect(loaded).toMatchObject({ status: 'paused', restoredParameters: original.parameters, restoredOverrides: expectedOverrides, provenance: 'imported-unverified', checksumStatus: 'unavailable' });
       receive({ data: { type: 'getCheckpoint' } });
       const migrated = sent.at(-1)?.checkpoint as { version: number; initialOverrides: unknown };
-      expect(migrated.version).toBe(3);
+      expect(migrated.version).toBe(4);
       expect(migrated.initialOverrides).toEqual(expectedOverrides);
       receive({ data: { type: 'load', checkpoint: migrated } });
       expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', restoredOverrides: expectedOverrides, provenance: 'imported-unverified', checksumStatus: 'verified' });
@@ -363,9 +369,57 @@ describe('simulation process', () => {
     receive({ data: { type: 'getExport' } });
     const exported = makeExport(sent.at(-1)?.checkpoint);
     expect(exported.checksum).toBeUndefined();
+    expect(exported.schema).toBe('europa-orbit-export-v3');
+    expect(exported.units.positionsKm).toBe('km');
+    expect(exported.units.energyDrift).toBe('dimensionless');
+    expect(exported.baseline.kind).toBe('restored');
     expect(exported.provenance).toBe('imported-unverified');
     receive({ data: { type: 'load', checkpoint: exported } });
     expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable' });
+  });
+  it('rejects inconsistent v4 analysis after checksum recomputation without interrupting a running simulation', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(200);
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint as any;
+    const changes: Array<(data: any) => void> = [
+      data => { data.baseline.energy = 0; },
+      data => { data.baseline.angularMomentum = [0, 0, 0]; },
+      data => { data.samples.at(-1).positionsKm.Europa[0] += 100; },
+      data => { data.samples.at(-1).energyDrift = -1; },
+      data => { data.samples.at(-1).energyDrift = 1; },
+    ];
+    for (const change of changes) {
+      const modified = structuredClone(saved);
+      change(modified);
+      const { checksum: _checksum, ...payload } = modified;
+      modified.checksum.digest = checkpointDigest(payload);
+      receive({ data: { type: 'load', checkpoint: modified } });
+      expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'running', timeSeconds: saved.state.timeSeconds });
+      expect((sent.at(-1)?.snapshot as { message: string }).message).toMatch(/baseline|analysis/);
+    }
+    vi.advanceTimersByTime(100);
+    expect((sent.at(-1)?.snapshot as { timeSeconds: number }).timeSeconds).toBe(saved.state.timeSeconds + 3600);
+  });
+  it('retains at most 2,000 analysis samples while keeping the initial baseline', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(100);
+    receive({ data: { type: 'getCheckpoint' } });
+    const saved = sent.at(-1)?.checkpoint as any;
+    const { timeSeconds: _time, positionsKm: _positions, energyDrift: _energy, angularMomentumDrift: _momentum, ...core } = saved.samples[0];
+    saved.samples = [...Array.from({ length: 1999 }, (_, i) => ({ ...core, timeSeconds: i })), saved.samples.at(-1)];
+    const { checksum: _checksum, ...payload } = saved;
+    saved.checksum.digest = checkpointDigest(payload);
+    receive({ data: { type: 'load', checkpoint: saved } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused' });
+    receive({ data: { type: 'pause' } });
+    vi.advanceTimersByTime(100);
+    receive({ data: { type: 'getCheckpoint' } });
+    const advanced = sent.at(-1)?.checkpoint as any;
+    expect(advanced.samples).toHaveLength(2000);
+    expect(advanced.samples[0].timeSeconds).toBe(1);
+    expect(advanced.samples.at(-1)?.positionsKm).toBeDefined();
+    expect(advanced.baseline).toMatchObject({ timeSeconds: 0, kind: 'initial' });
   });
   it('publishes current controls for remount after a new start, and clears them on reset', () => {
     receive({ data: { type: 'start', parameters: { eccentricity: 0.02 } } });

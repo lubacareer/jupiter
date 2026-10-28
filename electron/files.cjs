@@ -24,13 +24,13 @@ async function writeJsonAtomically(destination, data, { fileSystem = fs, uuid = 
 }
 
 function makeExport(checkpoint) {
-  // Export v2 remains loadable as legacy data. The v3 checkpoint digest covers
+  // Exports remain loadable as legacy data. The checkpoint digest covers
   // the checkpoint, not this expanded export document, so it must not be copied.
   const { checksum: _checksum, model: _model, ...legacyFields } = checkpoint;
   return {
     ...legacyFields,
     version: 2,
-    schema: 'europa-orbit-export-v2',
+    schema: 'europa-orbit-export-v3',
     modelConfiguration: {
       solver: 'point-mass velocity-Verlet, dt=300 s',
       referenceEpoch: '2025-01-01 TDB',
@@ -41,8 +41,8 @@ function makeExport(checkpoint) {
       ? 'Loaded from a user-supplied checkpoint; its origin and trajectory are not verified.'
       : 'Generated in this session from model initial conditions, including any user-selected orbital overrides; results are not independently verified.',
     checksumNote: 'No checksum covers this exported document.',
-    units: { timeSeconds: 's', semiMajorAxisKm: 'km', resonanceAngleDeg: 'degrees' },
-    assumptions: ['Four point masses', 'No tidal feedback or interior dynamics', 'Not mission-validated', 'Rolling history: latest 2,000 samples'],
+    units: { timeSeconds: 's', semiMajorAxisKm: 'km', resonanceAngleDeg: 'degrees', positionsKm: 'km', energyDrift: 'dimensionless', angularMomentumDrift: 'dimensionless', baselineEnergy: 'km^5/s^4', baselineAngularMomentum: 'km^5/s^3' },
+    assumptions: ['Four point masses', 'No tidal feedback or interior dynamics', 'Not mission-validated', 'Rolling history: latest 2,000 samples', 'Conservation drifts are relative numerical checks, not physical validation'],
   };
 }
 
