@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 
-/** Identifies the equations and epoch for which version-3 checkpoints are valid. */
+/** Identifies the equations and epoch for which version-3 and version-4 checkpoints are valid. */
 export const CHECKPOINT_MODEL = Object.freeze({
   id: 'europa-four-body-point-mass',
   epoch: '2025-01-01T00:00:00 TDB',

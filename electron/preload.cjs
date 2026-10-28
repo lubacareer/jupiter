@@ -11,5 +11,7 @@ contextBridge.exposeInMainWorld('europa', {
   loadCheckpoint: () => ipcRenderer.send('simulation:load'),
   exportData: () => ipcRenderer.send('simulation:export'),
   saveGpuDocument: (kind, document) => ipcRenderer.invoke('gpu:save', kind, document),
-  loadGpuCheckpoint: () => ipcRenderer.invoke('gpu:load')
+  loadGpuCheckpoint: () => ipcRenderer.invoke('gpu:load'),
+  saveRadialDocument: (kind, document) => ipcRenderer.invoke('radial:save', kind, document),
+  loadRadialCheckpoint: () => ipcRenderer.invoke('radial:load')
 });

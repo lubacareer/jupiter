@@ -83,7 +83,7 @@ describe('atomic JSON saves', () => {
 
   it('does not present imported checkpoint provenance as established origin', () => {
     const result = makeExport({ version: 2, provenance: 'imported-unverified', initialOverrides: {}, samples: [] });
-    expect(result.schema).toBe('europa-orbit-export-v2');
+    expect(result.schema).toBe('europa-orbit-export-v3');
     expect(result.provenance).toBe('imported-unverified');
     expect(result.provenanceNote).toContain('not verified');
     expect(result.modelConfiguration.referenceEpoch).toBe('2025-01-01 TDB');
@@ -103,7 +103,7 @@ describe('atomic JSON saves', () => {
     };
     const result = makeExport(source);
     expect(result.version).toBe(2);
-    expect(result.schema).toBe('europa-orbit-export-v2');
+    expect(result.schema).toBe('europa-orbit-export-v3');
     expect(result.checksum).toBeUndefined();
     expect(result.model).toBeUndefined();
     expect(result.checksumNote).toMatch(/No checksum covers/);

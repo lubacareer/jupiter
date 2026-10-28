@@ -30,7 +30,8 @@ export interface GpuOrbitSample {
   completed: boolean;
 }
 export interface GpuOrbitSession {
-  advance(): Promise<GpuOrbitSample>;
+  /** Optional validation runs before the candidate replaces the accepted state. */
+  advance(validateCandidate?: (candidate: GpuOrbitSample) => void): Promise<GpuOrbitSample>;
   checkpoint(): GpuOrbitCheckpoint;
   sample(): GpuOrbitSample;
   dispose(): void;
@@ -167,7 +168,7 @@ export async function createGpuOrbit(device: GPUDevice, initialState: OrbitState
   return {
     sample,
     checkpoint: () => ({ version: 1, initialState: clone(initialState), reference: clone(reference), packedState: Array.from(packed), steps, maxSteps }),
-    async advance() {
+    async advance(validateCandidate) {
       if (disposed) throw new Error('GPU orbital session has been disposed');
       if (failed) throw new Error(failed);
       if (busy) throw new Error('GPU orbital session is already advancing');
@@ -193,6 +194,10 @@ export async function createGpuOrbit(device: GPUDevice, initialState: OrbitState
         const nextError = orbitPositionErrorKm(nextState, nextReference);
         if (!Number.isFinite(nextError) || nextError > ORBIT_GPU_ERROR_LIMIT_KM) throw new Error(`GPU orbital comparison exceeded 10 km (${nextError.toFixed(3)} km)`);
         orbitDiagnostics(nextState);
+        // Derivations that must agree with the published state are checked
+        // before committing buffers, reference state, or the step counter.
+        if (validateCandidate) validateCandidate({ state: clone(nextState), reference: clone(nextReference), errorKm: nextError,
+          steps: steps + count, maxSteps, completed: steps + count >= maxSteps });
         [active, candidate] = [candidate, active]; packed = nextPacked; reference = nextReference; currentState = nextState; errorKm = nextError; steps += count;
         return sample();
       } catch (error) {

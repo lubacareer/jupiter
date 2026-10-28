@@ -5,7 +5,7 @@ export type GpuMode = 'orbit' | 'thermal';
 export interface GpuProvenance { origin: 'local' | 'unverified'; input: 'new' | 'imported'; checksum: 'verified' | 'unavailable' }
 export type GpuAdapterMetadata = Record<string, string>;
 export interface GpuCheckpoint {
-  version: 4;
+  version: 4 | 5;
   mode: GpuMode;
   model: { id: string; epoch: string; solver: string };
   backend: 'webgpu';
@@ -63,24 +63,32 @@ export async function createGpuCheckpoint(mode: GpuMode, data: GpuWorkerCheckpoi
   if (!(mode in models)) throw new Error('Unsupported GPU mode');
   validateAdapter(adapter); validateProvenance(provenance);
   if (data.mode !== mode || data.data.version !== 1 || !Array.isArray(data.history)) throw new Error('Invalid GPU checkpoint payload');
+  if (data.mode === 'orbit' && (!Array.isArray(data.orbitAnalysisSamples) || !data.orbitAnalysisBaseline)) throw new Error('Missing GPU orbital analysis');
   // Clone through canonical JSON to detach from mutable simulation state.
-  const payload = JSON.parse(canonical({ version: 4, mode, model: models[mode], backend: 'webgpu', precision: 'float32', adapter, provenance, data })) as Omit<GpuCheckpoint, 'checksum'>;
+  const payload = JSON.parse(canonical({ version: 5, mode, model: models[mode], backend: 'webgpu', precision: 'float32', adapter, provenance, data })) as Omit<GpuCheckpoint, 'checksum'>;
   return { ...payload, checksum: { algorithm: 'sha256', digest: await digest(payload) } };
 }
 
 /** Verify metadata and digest before constructing a candidate GPU session. */
 export async function parseGpuCheckpoint(value: unknown): Promise<{ checkpoint: GpuCheckpoint; provenance: GpuProvenance }> {
-  if (!object(value) || !equalKeys(value, 'adapter,backend,checksum,data,mode,model,precision,provenance,version') || value.version !== 4 ||
+  if (!object(value) || !equalKeys(value, 'adapter,backend,checksum,data,mode,model,precision,provenance,version') || (value.version !== 4 && value.version !== 5) ||
       (value.mode !== 'orbit' && value.mode !== 'thermal') || value.backend !== 'webgpu' || value.precision !== 'float32') throw new Error('Unsupported GPU checkpoint');
   validateAdapter(value.adapter); validateProvenance(value.provenance);
   if (!object(value.model) || !equalKeys(value.model, 'epoch,id,solver') ||
       canonical(value.model) !== canonical(models[value.mode])) throw new Error('Unsupported GPU checkpoint model');
   if (!object(value.data) || value.data.mode !== value.mode || !object(value.data.data) || value.data.data.version !== 1 || !Array.isArray(value.data.history)) throw new Error('Invalid GPU checkpoint payload');
+  if (value.version === 5 && value.mode === 'orbit' && (!Array.isArray(value.data.orbitAnalysisSamples) || !object(value.data.orbitAnalysisBaseline))) throw new Error('Missing GPU orbital analysis');
   if (!object(value.checksum) || !equalKeys(value.checksum, 'algorithm,digest') || value.checksum.algorithm !== 'sha256' ||
       typeof value.checksum.digest !== 'string' || !/^[0-9a-f]{64}$/.test(value.checksum.digest)) throw new Error('Missing or invalid checkpoint checksum');
   const { checksum, ...payload } = value;
   if (await digest(payload) !== checksum.digest) throw new Error('Checkpoint checksum mismatch');
   const checkpoint = JSON.parse(canonical(value)) as GpuCheckpoint;
+  // Version 4 did not define orbital analysis. Ignore arbitrary extension fields
+  // after checksum verification and start analysis at the restored state instead.
+  if (checkpoint.version === 4 && checkpoint.data.mode === 'orbit') {
+    delete checkpoint.data.orbitAnalysisSamples;
+    delete checkpoint.data.orbitAnalysisBaseline;
+  }
   return { checkpoint, provenance: { origin: 'unverified', input: 'imported', checksum: 'verified' } };
 }
 
@@ -89,8 +97,8 @@ export function exportGpuResult(mode: GpuMode, data: GpuWorkerCheckpoint,
   adapter: GpuAdapterMetadata, provenance: GpuProvenance): object {
   validateAdapter(adapter); validateProvenance(provenance);
   if (data.mode !== mode || data.data.version !== 1 || !Array.isArray(data.history)) throw new Error('Invalid GPU export payload');
-  return JSON.parse(canonical({ format: 'europa-gpu-export-v1', mode, model: models[mode], backend: 'webgpu', precision: 'float32',
+  return JSON.parse(canonical({ format: 'europa-gpu-export-v2', mode, model: models[mode], backend: 'webgpu', precision: 'float32',
     adapter, provenance, data, assumptions: ['GPU computation compared with independently advanced double-precision CPU reference',
       'Prototype only; not a validated Europa mission prediction', 'Imported data is unverified; checksums do not authenticate its origin'],
-    units: mode === 'orbit' ? { position: 'km', velocity: 'km/s', time: 's' } : { enthalpy: 'J/m^3', temperature: 'K', time: 's' } }));
+    units: mode === 'orbit' ? { position: 'km', velocity: 'km/s', time: 's', semiMajorAxisKm: 'km', resonanceAngleDeg: 'degrees', energyDrift: 'dimensionless', angularMomentumDrift: 'dimensionless', baselineEnergy: 'km^5/s^4', baselineAngularMomentum: 'km^5/s^3' } : { enthalpy: 'J/m^3', temperature: 'K', time: 's' } }));
 }

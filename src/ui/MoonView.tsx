@@ -1,9 +1,19 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import * as THREE from 'three'
+import type { Vec3 } from '../simulation/orbit'
+import { cutawayBands, cutawayColor, type CutawayData } from './cutawayGeometry'
+
+export type MoonOrbit = { europaPositionKm: Vec3 }
+type SceneUpdates = { thermal: (data?: CutawayData) => void; orbit: (orbit?: MoonOrbit) => void }
 
 /** A schematic cutaway. Geometry and displacement are deliberately not solver output. */
-export function MoonView() {
+export function MoonView({ thermal, orbit }: { thermal?: CutawayData; orbit?: MoonOrbit }) {
   const mount = useRef<HTMLDivElement>(null)
+  const sceneRef = useRef<SceneUpdates | null>(null)
+  const pendingThermal = useRef(thermal)
+  useLayoutEffect(() => { pendingThermal.current = thermal }, [thermal])
+  const thermalTimer = useRef<number | undefined>(undefined)
+  const lastThermalUpdate = useRef(-Infinity)
 
   useEffect(() => {
     const host = mount.current
@@ -33,6 +43,9 @@ export function MoonView() {
     // Show both the exterior and the removed quadrant on first render.
     moon.rotation.set(-0.08, Math.PI * 0.75 + 0.42, 0.08)
     scene.add(moon)
+    const schematic = new THREE.Group()
+    const calculated = new THREE.Group()
+    moon.add(schematic, calculated)
     const arc = Math.PI * 1.5
     const layers: Array<[number, number, number, number]> = [
       [1, 0.84, 0xc6d5d9, 0.83],
@@ -74,7 +87,7 @@ export function MoonView() {
           resources.push(surface)
         }
       }
-      moon.add(new THREE.Mesh(geometry, surface))
+      ;(outer === 1 ? moon : schematic).add(new THREE.Mesh(geometry, surface))
       // Join adjacent spherical layers at the two edges of the removed wedge.
       for (const phi of [0, arc]) {
         const positions: number[] = []
@@ -95,7 +108,7 @@ export function MoonView() {
         face.setIndex(indices)
         face.computeVertexNormals()
         resources.push(face)
-        moon.add(new THREE.Mesh(face, material))
+        schematic.add(new THREE.Mesh(face, material))
       }
     }
     // Fine longitudes provide visual texture without implying measured surface data.
@@ -112,6 +125,69 @@ export function MoonView() {
       const geometry = new THREE.BufferGeometry().setFromPoints(points)
       resources.push(geometry)
       moon.add(new THREE.Line(geometry, lineMaterial))
+    }
+    const direction = new THREE.ArrowHelper(new THREE.Vector3(1, 0, 0), new THREE.Vector3(1.12, 0, 0), .58, 0xffc579, .18, .09)
+    direction.visible = false
+    scene.add(direction)
+    const clearCalculated = () => {
+      for (const child of [...calculated.children]) {
+        calculated.remove(child)
+        if (child instanceof THREE.Mesh || child instanceof THREE.Line) {
+          child.geometry.dispose()
+          const materials = Array.isArray(child.material) ? child.material : [child.material]
+          materials.forEach(material => material.dispose())
+        }
+      }
+    }
+    sceneRef.current = {
+      orbit(value) {
+        const v = value?.europaPositionKm
+        if (!v || !v.every(Number.isFinite) || Math.hypot(...v) === 0) { direction.visible = false; return }
+        const vector = new THREE.Vector3(-v[0], -v[1], -v[2]).normalize()
+        direction.position.copy(vector).multiplyScalar(1.12)
+        direction.setDirection(vector)
+        direction.visible = true
+      },
+      thermal(data) {
+        clearCalculated()
+        schematic.visible = !data
+        if (!data) return
+        const result = cutawayBands(data)
+        const rockMaterial = new THREE.MeshStandardMaterial({ color: 0x534d48, roughness: 1, side: THREE.DoubleSide })
+        const rock = new THREE.Mesh(new THREE.SphereGeometry(result.rockRadius, 48, 32, 0, arc), rockMaterial)
+        calculated.add(rock)
+        // Two radial cut faces, made from cell-aligned strips with one color per cell.
+        for (const phi of [0, arc]) {
+          const positions: number[] = [], colors: number[] = [], indices: number[] = []
+          const addBand = (inner: number, outer: number, color: [number, number, number]) => {
+            const start = positions.length / 3, steps = 24
+            // Mesh vertex colors are linear; the legend's CSS colors are sRGB.
+            const linearColor = new THREE.Color().setRGB(...color, THREE.SRGBColorSpace).toArray()
+            for (let i = 0; i <= steps; i++) {
+              const theta = Math.PI * i / steps
+              for (const radius of [inner, outer]) {
+                positions.push(-radius * Math.cos(phi) * Math.sin(theta), radius * Math.cos(theta), radius * Math.sin(phi) * Math.sin(theta))
+                colors.push(...linearColor)
+              }
+              if (i < steps) { const n = start + i * 2; indices.push(n, n + 1, n + 2, n + 1, n + 3, n + 2) }
+            }
+          }
+          addBand(0, result.rockRadius, [.19, .17, .16])
+          for (const band of result.bands) addBand(band.inner, band.outer, cutawayColor(band.value, result.min, result.max))
+          const geometry = new THREE.BufferGeometry()
+          geometry.setAttribute('position', new THREE.Float32BufferAttribute(positions, 3))
+          geometry.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3))
+          geometry.setIndex(indices); geometry.computeVertexNormals()
+          calculated.add(new THREE.Mesh(geometry, new THREE.MeshBasicMaterial({ vertexColors: true, side: THREE.DoubleSide })))
+          if (result.transitionRadius !== null) {
+            const points = Array.from({ length: 49 }, (_, i) => {
+              const theta = Math.PI * i / 48, r = result.transitionRadius!
+              return new THREE.Vector3(-r * Math.cos(phi) * Math.sin(theta), r * Math.cos(theta), r * Math.sin(phi) * Math.sin(theta))
+            })
+            calculated.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(points), new THREE.LineBasicMaterial({ color: 0xffffff })))
+          }
+        }
+      },
     }
     let dragging = false
     let previousX = 0
@@ -143,6 +219,10 @@ export function MoonView() {
       const height = host.clientHeight || 1
       renderer.setSize(width, height, false)
       camera.aspect = width / height
+      // Fit the globe for both wide and tall panels, leaving room for the direction arrow.
+      const halfVertical = THREE.MathUtils.degToRad(camera.fov / 2)
+      const halfHorizontal = Math.atan(Math.tan(halfVertical) * camera.aspect)
+      camera.position.z = Math.max(4.8, 1.85 / Math.sin(Math.min(halfVertical, halfHorizontal)))
       camera.updateProjectionMatrix()
     }
     const observer = new ResizeObserver(resize)
@@ -171,11 +251,26 @@ export function MoonView() {
       renderer.domElement.removeEventListener('pointerup', onUp)
       renderer.domElement.removeEventListener('pointercancel', onUp)
       host.removeEventListener('keydown', onKey)
+      sceneRef.current = null
+      clearCalculated()
+      direction.dispose()
       resources.forEach(resource => resource.dispose())
       textures.forEach(texture => texture.dispose())
       renderer.dispose()
       renderer.domElement.remove()
     }
   }, [])
-  return <div ref={mount} className="moon-canvas" role="img" tabIndex={0} aria-label="Illustrative 3D cutaway of Europa; drag or use arrow keys to rotate" />
+  // Geometry can contain thousands of radial cells. Throttle only the visual
+  // mesh, never the simulation data; a pending update always draws the newest.
+  useEffect(() => {
+    const apply = () => { thermalTimer.current = undefined; sceneRef.current?.thermal(pendingThermal.current); lastThermalUpdate.current = performance.now() }
+    const delay = Math.max(0, 200 - (performance.now() - lastThermalUpdate.current))
+    if (!thermal || delay === 0) {
+      if (thermalTimer.current !== undefined) window.clearTimeout(thermalTimer.current)
+      apply()
+    } else if (thermalTimer.current === undefined) thermalTimer.current = window.setTimeout(apply, delay)
+  }, [thermal])
+  useEffect(() => () => { if (thermalTimer.current !== undefined) window.clearTimeout(thermalTimer.current) }, [])
+  useEffect(() => { sceneRef.current?.orbit(orbit) }, [orbit])
+  return <div ref={mount} className="moon-canvas" role="img" tabIndex={0} aria-label="Europa 3D cutaway; drag or use arrow keys to rotate. Interior values are a radial model; orientation is illustrative." />
 }

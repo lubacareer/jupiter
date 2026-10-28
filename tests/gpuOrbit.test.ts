@@ -72,6 +72,18 @@ describe('GPU orbital comparison', () => {
     session.dispose();
   });
 
+  it('does not commit a candidate when its analysis validation fails', async () => {
+    const initial = createInitialOrbit();
+    const session = await createGpuOrbit(fakeDevice(initial), initial);
+    const before = session.checkpoint();
+    let candidateSteps = 0;
+    await expect(session.advance(candidate => { candidateSteps = candidate.steps; throw new Error('analysis rejected'); })).rejects.toThrow(/analysis rejected/);
+    expect(candidateSteps).toBe(12);
+    expect(session.checkpoint()).toEqual(before);
+    expect(session.sample().steps).toBe(0);
+    session.dispose();
+  });
+
   it('rejects altered packed model constants on restore', async () => {
     const initial = createInitialOrbit();
     const session = await createGpuOrbit(fakeDevice(initial), initial);

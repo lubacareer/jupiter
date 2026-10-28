@@ -1,13 +1,18 @@
 import { createInitialOrbit } from './orbit';
-import { createGpuOrbit, type GpuOrbitSession } from './gpuOrbit';
+import { createGpuOrbit, type GpuOrbitCheckpoint, type GpuOrbitSession } from './gpuOrbit';
 import { createGpuThermal, type GpuThermalSession } from './gpuThermal';
 import { requestHardwareDevice } from './gpuDevice';
+import { makeOrbitalBaseline, makeOrbitalSample, parseOrbitalBaseline, parseOrbitalSample, type OrbitalBaseline, type OrbitalSample } from './orbitAnalysis';
 import type { GpuHistoryEntry, GpuWorkerCheckpoint, GpuWorkerCommand, GpuWorkerEvent, GpuWorkerSnapshot } from './gpuProtocol';
 
 type Active = { mode: 'orbit'; session: GpuOrbitSession } | { mode: 'thermal'; session: GpuThermalSession };
 let active: Active | undefined;
+// Checkpoints must correspond to the last published analysis, even when a
+// device-loss event overtakes publication of an already completed GPU step.
+let publishedOrbitCheckpoint: GpuOrbitCheckpoint | undefined;
 let snapshot: GpuWorkerSnapshot = { status: 'idle', history: [], provenance: 'local' };
 let device: GPUDevice | undefined;
+let deviceDescription: string | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stepping = false;
 let generation = 0;
@@ -21,10 +26,10 @@ async function getDevice(): Promise<GPUDevice> {
   if (device) return device;
   const selected = await requestHardwareDevice();
   device = selected.device;
-  snapshot = { ...snapshot, device: selected.description };
+  deviceDescription = selected.description;
   selected.device.lost.then(info => {
     if (device !== selected.device) return;
-    device = undefined; generation++; stopTimer();
+    device = undefined; deviceDescription = undefined; generation++; stopTimer();
     snapshot = { ...snapshot, status: 'error', message: `GPU device lost: ${info.message || info.reason}` };
     notify();
   });
@@ -34,7 +39,38 @@ async function getDevice(): Promise<GPUDevice> {
 function currentCheckpoint(): GpuWorkerCheckpoint {
   if (!active) throw new Error('No GPU experiment is loaded');
   const history = snapshot.history.map(row => ({ ...row }));
-  return active.mode === 'orbit' ? { mode: 'orbit', data: active.session.checkpoint(), history } : { mode: 'thermal', data: active.session.snapshot(), history };
+  if (active.mode === 'orbit') {
+    if (!publishedOrbitCheckpoint) throw new Error('No published GPU orbital state is available');
+    return { mode: 'orbit', data: publishedOrbitCheckpoint, history, orbitAnalysisSamples: snapshot.orbitAnalysisSamples, orbitAnalysisBaseline: snapshot.orbitAnalysisBaseline };
+  }
+  // A completed step can be overtaken by device loss before its publication.
+  // The displayed snapshot is the last field whose history was published.
+  if (!snapshot.thermal) throw new Error('No published GPU thermal state is available');
+  return { mode: 'thermal', data: snapshot.thermal, history };
+}
+
+function restoreAnalysis(checkpoint: Extract<GpuWorkerCheckpoint, { mode: 'orbit' }>, next: GpuOrbitSession, history: GpuHistoryEntry[]): { samples: OrbitalSample[]; baseline: OrbitalBaseline } {
+  const state = next.sample().state;
+  if (checkpoint.orbitAnalysisSamples === undefined && checkpoint.orbitAnalysisBaseline === undefined) {
+    const baseline = makeOrbitalBaseline(state, 'restored');
+    return { baseline, samples: [makeOrbitalSample(state, baseline)] };
+  }
+  if (!Array.isArray(checkpoint.orbitAnalysisSamples) || checkpoint.orbitAnalysisSamples.length < 1 || checkpoint.orbitAnalysisSamples.length > 2000) throw new Error('Invalid GPU orbital analysis history');
+  const baseline = parseOrbitalBaseline(checkpoint.orbitAnalysisBaseline, state.timeSeconds);
+  let previous = -1;
+  const times = new Set(history.map(row => row.timeSeconds));
+  const samples = checkpoint.orbitAnalysisSamples.map(item => {
+    const result = parseOrbitalSample(item, state.timeSeconds);
+    if (result.timeSeconds <= previous || result.timeSeconds < baseline.timeSeconds || !times.has(result.timeSeconds) || !result.positionsKm || result.energyDrift === undefined || result.angularMomentumDrift === undefined) throw new Error('Invalid GPU orbital analysis history');
+    previous = result.timeSeconds;
+    return result;
+  });
+  const actual = makeOrbitalSample(state, baseline), last = samples[samples.length - 1];
+  const closeEnough = (a: number, b: number) => Math.abs(a - b) <= 1e-9 + 1e-12 * Math.max(Math.abs(a), Math.abs(b));
+  if (last.timeSeconds !== actual.timeSeconds || !closeEnough(last.eccentricity, actual.eccentricity) || !closeEnough(last.semiMajorAxisKm, actual.semiMajorAxisKm) ||
+      !closeEnough(last.resonanceAngleDeg, actual.resonanceAngleDeg) || !closeEnough(last.energyDrift!, actual.energyDrift!) || !closeEnough(last.angularMomentumDrift!, actual.angularMomentumDrift!) ||
+      (['Io', 'Europa', 'Ganymede'] as const).some(name => last.positionsKm![name].some((value, index) => !closeEnough(value, actual.positionsKm![name][index])))) throw new Error('GPU orbital analysis history does not match its state');
+  return { samples, baseline };
 }
 function historyFor(checkpoint: GpuWorkerCheckpoint): GpuHistoryEntry[] {
   if (!Array.isArray(checkpoint.history) || checkpoint.history.length < 1 || checkpoint.history.length > 2000) throw new Error('Invalid GPU checkpoint history');
@@ -58,13 +94,24 @@ function schedule(): void {
   timer = setTimeout(async () => {
     timer = undefined; stepping = true;
     try {
-      const result = await item.session.advance();
+      let candidateAnalysis: OrbitalSample | undefined;
+      const baseline = snapshot.orbitAnalysisBaseline;
+      const result = item.mode === 'orbit'
+        ? await item.session.advance(candidate => {
+          if (!baseline) throw new Error('GPU orbital analysis baseline is unavailable');
+          candidateAnalysis = makeOrbitalSample(candidate.state, baseline);
+        })
+        : await item.session.advance();
       if (version !== generation || active !== item) return;
       const timeSeconds = item.mode === 'orbit' ? (result as ReturnType<GpuOrbitSession['sample']>).state.timeSeconds : (result as ReturnType<GpuThermalSession['snapshot']>).time;
       const error = item.mode === 'orbit' ? (result as ReturnType<GpuOrbitSession['sample']>).errorKm : (result as ReturnType<GpuThermalSession['snapshot']>).errors.maxTemperatureKelvin;
       const history = [...snapshot.history, { timeSeconds, error }].slice(-2000);
+      const analysis = item.mode === 'orbit' && candidateAnalysis
+        ? [...(snapshot.orbitAnalysisSamples ?? []), candidateAnalysis].slice(-2000)
+        : undefined;
       const completed = item.mode === 'orbit' && (result as ReturnType<GpuOrbitSession['sample']>).completed;
-      snapshot = { ...snapshot, ...display(item), history, status: completed ? 'completed' : snapshot.status, message: completed ? 'Ten-orbit limit reached.' : snapshot.message };
+      if (item.mode === 'orbit') publishedOrbitCheckpoint = item.session.checkpoint();
+      snapshot = { ...snapshot, ...display(item), history, orbitAnalysisSamples: analysis, status: completed ? 'completed' : snapshot.status, message: completed ? 'Ten-orbit limit reached.' : snapshot.message };
       notify();
     } catch (error) {
       if (version !== generation || active !== item) return;
@@ -75,7 +122,7 @@ function schedule(): void {
 async function handle(command: GpuWorkerCommand): Promise<void> {
   try {
     switch (command.type) {
-      case 'probe': await getDevice(); snapshot = { ...snapshot, message: 'Hardware WebGPU device available.' }; notify(); break;
+      case 'probe': await getDevice(); snapshot = { ...snapshot, device: active ? snapshot.device : deviceDescription, message: 'Hardware WebGPU device available.' }; notify(); break;
       case 'start-orbit': case 'start-thermal': case 'load': {
         let loadedHistory: GpuHistoryEntry[] | undefined;
         if (command.type === 'load') {
@@ -91,13 +138,26 @@ async function handle(command: GpuWorkerCommand): Promise<void> {
         if (device !== gpu) { close(next); throw new Error('GPU device was lost while starting the experiment'); }
         const actual = initialHistory(next)[0], last = loadedHistory?.[loadedHistory.length - 1];
         if (last && (last.timeSeconds !== actual.timeSeconds || Math.abs(last.error - actual.error) > 1e-9)) { close(next); throw new Error('GPU checkpoint history does not match its state'); }
+        let analysis: { samples: OrbitalSample[]; baseline: OrbitalBaseline } | undefined;
+        try {
+          if (next.mode === 'orbit') {
+            if (command.type === 'load' && command.checkpoint.mode === 'orbit') analysis = restoreAnalysis(command.checkpoint, next.session, loadedHistory!);
+            else {
+              const initial = next.session.sample().state;
+              const baseline = makeOrbitalBaseline(initial, 'initial');
+              analysis = { baseline, samples: [makeOrbitalSample(initial, baseline)] };
+            }
+          }
+        } catch (error) { close(next); throw error; }
         generation++; stopTimer(); close(active); active = next;
-        snapshot = { ...snapshot, mode: next.mode, ...display(next), history: loadedHistory ?? initialHistory(next), status: command.type === 'load' ? 'paused' : 'running', provenance: command.type === 'load' ? 'imported-unverified' : 'local', message: command.type === 'load' ? 'Imported origin is unverified.' : undefined };
+        publishedOrbitCheckpoint = next.mode === 'orbit' ? next.session.checkpoint() : undefined;
+        const completed = next.mode === 'orbit' && next.session.sample().completed;
+        snapshot = { ...snapshot, mode: next.mode, ...display(next), device: deviceDescription, history: loadedHistory ?? initialHistory(next), orbitAnalysisSamples: analysis?.samples, orbitAnalysisBaseline: analysis?.baseline, status: completed ? 'completed' : command.type === 'load' ? 'paused' : 'running', provenance: command.type === 'load' ? 'imported-unverified' : 'local', message: completed ? (command.type === 'load' ? 'Ten-orbit limit reached. Imported origin is unverified.' : 'Ten-orbit limit reached.') : command.type === 'load' ? 'Imported origin is unverified.' : undefined };
         notify(); schedule(); break;
       }
       case 'pause': if (snapshot.status === 'running') { snapshot = { ...snapshot, status: 'paused' }; stopTimer(); } notify(); break;
       case 'resume': if (active && snapshot.status === 'paused') { snapshot = { ...snapshot, status: 'running', message: undefined }; notify(); schedule(); } break;
-      case 'reset': generation++; stopTimer(); close(active); active = undefined; snapshot = { status: 'idle', history: [], provenance: 'local', device: snapshot.device }; notify(); break;
+      case 'reset': generation++; stopTimer(); close(active); active = undefined; publishedOrbitCheckpoint = undefined; snapshot = { status: 'idle', history: [], provenance: 'local', device: snapshot.device }; notify(); break;
       case 'checkpoint': case 'export': post({ type: command.type, checkpoint: currentCheckpoint() }); break;
       default: throw new Error('Unsupported GPU command');
     }

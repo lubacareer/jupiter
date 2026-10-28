@@ -1,23 +1,28 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createGpuCheckpoint, exportGpuResult, parseGpuCheckpoint } from '../simulation/gpuCheckpoint'
 import { defaultGpuThermalConfig } from '../simulation/gpuThermal'
 import { phaseFromEnthalpy } from '../simulation/interior'
 import type { GpuWorkerCommand, GpuWorkerEvent, GpuWorkerSnapshot } from '../simulation/gpuProtocol'
 import type { ParameterOverrides } from './parameterState'
+import { OrbitDiagnosticsView, OrbitView } from './OrbitAnalysis'
 
 export interface GpuFileBridge {
   saveGpuDocument: (kind: 'checkpoint' | 'export', document: object) => Promise<boolean>
   loadGpuCheckpoint: () => Promise<unknown>
+  saveRadialDocument?: (kind: 'checkpoint' | 'export', document: object) => Promise<boolean>
+  loadRadialCheckpoint?: () => Promise<unknown>
 }
 
 /** A separate worker keeps GPU work and its independent CPU comparison off the UI thread. */
-export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverrides; bridge: GpuFileBridge }) {
+export function GpuPanel({ parameters, bridge, onSnapshot }: { parameters: ParameterOverrides; bridge: GpuFileBridge; onSnapshot?: (snapshot: GpuWorkerSnapshot) => void }) {
   const worker = useRef<Worker | null>(null)
   const latest = useRef<GpuWorkerSnapshot>({ status: 'idle', history: [], provenance: 'local' })
   const [snapshot, setSnapshot] = useState(latest.current)
   const [fileMessage, setFileMessage] = useState('')
   const [workerFailed, setWorkerFailed] = useState(false)
   const [workerGeneration, setWorkerGeneration] = useState(0)
+  const onSnapshotRef = useRef(onSnapshot)
+  useLayoutEffect(() => { onSnapshotRef.current = onSnapshot }, [onSnapshot])
   const send = (command: GpuWorkerCommand) => worker.current?.postMessage(command)
   useEffect(() => {
     const instance = new Worker(new URL('../simulation/gpuWorker.ts', import.meta.url), { type: 'module' })
@@ -27,6 +32,7 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       if (event.data.type === 'snapshot') {
         latest.current = event.data.snapshot
         setSnapshot(event.data.snapshot)
+        onSnapshotRef.current?.(event.data.snapshot)
         return
       }
       const { checkpoint, type: kind } = event.data
@@ -52,6 +58,7 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       const failed: GpuWorkerSnapshot = { status: 'error', history: [], provenance: 'local', message: 'GPU worker exited; in-memory results were lost. Retry to start a fresh worker.' }
       latest.current = failed
       setSnapshot(failed)
+      onSnapshotRef.current?.(failed)
     }
     instance.postMessage({ type: 'probe' } satisfies GpuWorkerCommand)
     return () => { instance.terminate(); if (worker.current === instance) worker.current = null }
@@ -93,6 +100,11 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       <button className="utility-button" disabled={!hasResult} onClick={() => send({ type: 'export' })}>Export GPU data</button>
     </div>
     {snapshot.orbit && <p>Orbit: {(snapshot.orbit.state.timeSeconds / 86400).toFixed(3)} days · step {snapshot.orbit.steps} / {snapshot.orbit.maxSteps} · CPU position difference {snapshot.orbit.errorKm.toFixed(4)} km (limit 10 km).</p>}
+    {snapshot.mode === 'orbit' && snapshot.orbit && <div className="gpu-orbit-analysis">
+      <h3>GPU orbit around Jupiter</h3><p>Accepted GPU positions · independent from the CPU workspace</p>
+      <OrbitView samples={snapshot.orbitAnalysisSamples ?? []} label="GPU"/>
+      <OrbitDiagnosticsView samples={snapshot.orbitAnalysisSamples ?? []} baseline={snapshot.orbitAnalysisBaseline} label="GPU"/>
+    </div>}
     {snapshot.thermal && <p>Thermal: {snapshot.thermal.time.toFixed(3)} s · maximum temperature difference {snapshot.thermal.errors.maxTemperatureKelvin.toPrecision(3)} K · liquid fraction difference {snapshot.thermal.errors.maxLiquidFraction.toPrecision(3)} · normalized energy difference {snapshot.thermal.errors.normalizedEnergy.toPrecision(3)}.</p>}
     {thermalSummary && <p>Synthetic field: {thermalSummary.min.toFixed(3)}–{thermalSummary.max.toFixed(3)} K · mean liquid fraction {thermalSummary.meanLiquid.toFixed(4)}.</p>}
     {history.length > 1 && <svg viewBox="0 0 500 100" className="chart" role="img" aria-label={snapshot.mode === 'orbit' ? 'GPU orbital position error over time' : 'GPU thermal temperature error over time'}><line x1="10" y1="90" x2="490" y2="90" stroke="#526779"/><polyline points={historyPoints} fill="none" stroke="#55b8ff" strokeWidth="2"/><text x="10" y="12" fill="#849caf" fontSize="10">Maximum shown: {maximumError.toPrecision(3)} {snapshot.mode === 'orbit' ? 'km' : 'K'}</text></svg>}
