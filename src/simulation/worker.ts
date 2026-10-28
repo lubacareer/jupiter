@@ -67,6 +67,8 @@ function nearlyEqualAngle(a: number, b: number, tolerance: number): boolean {
 function parseCheckpoint(value: unknown): LoadedCheckpoint {
   if (!isObject(value) || (value.version !== 1 && value.version !== 2 && value.version !== 3 && value.version !== 4)) throw new Error('Invalid or unsupported checkpoint');
   if (value.version === 3 || value.version === 4) verifyCheckpointIntegrity(value);
+  // V3 exports deliberately have no checksum but contain the complete v4 analysis.
+  const hasAnalysis = value.version === 4 || (value.version === 2 && value.schema === 'europa-orbit-export-v3');
   if (!validParameters(value.parameters) ||
       !isObject(value.state) || !finite(value.state.timeSeconds) || value.state.timeSeconds < 0 ||
       !Array.isArray(value.state.bodies) || value.state.bodies.length !== 4 ||
@@ -85,9 +87,9 @@ function parseCheckpoint(value: unknown): LoadedCheckpoint {
   let previousTime = -1;
   const normalizedSamples: Sample[] = [];
   for (const item of value.samples) {
-    // Before v4, analysis fields were not defined: ignore any imported extras.
+    // Older checkpoints and exports did not define analysis fields.
     const raw = item as Record<string, unknown>;
-    const sample = value.version === 4 ? parseOrbitalSample(item, stateTime) : parseOrbitalSample({
+    const sample = hasAnalysis ? parseOrbitalSample(item, stateTime) : parseOrbitalSample({
       timeSeconds: raw?.timeSeconds, eccentricity: raw?.eccentricity, semiMajorAxisKm: raw?.semiMajorAxisKm, resonanceAngleDeg: raw?.resonanceAngleDeg,
     }, stateTime);
     if (sample.timeSeconds <= previousTime) throw new Error('Invalid checkpoint sample history');
@@ -95,13 +97,13 @@ function parseCheckpoint(value: unknown): LoadedCheckpoint {
     normalizedSamples.push(sample);
   }
   const typedState: OrbitState = { timeSeconds: stateTime, bodies };
-  const loadedBaseline = value.version === 4 ? parseOrbitalBaseline(value.baseline, stateTime) : makeOrbitalBaseline(typedState, 'restored');
+  const loadedBaseline = hasAnalysis ? parseOrbitalBaseline(value.baseline, stateTime) : makeOrbitalBaseline(typedState, 'restored');
   const actual = sampleFor(typedState, loadedBaseline);
   const last = normalizedSamples[normalizedSamples.length - 1];
   if (last.timeSeconds !== stateTime || !nearlyEqual(last.eccentricity, actual.eccentricity, 1e-10) ||
       !nearlyEqual(last.semiMajorAxisKm, actual.semiMajorAxisKm, 1e-5) ||
       !nearlyEqualAngle(last.resonanceAngleDeg, actual.resonanceAngleDeg, 1e-7)) throw new Error('Checkpoint history does not match its current state');
-  if (value.version === 4) {
+  if (hasAnalysis) {
     if (!last.positionsKm || last.energyDrift === undefined || last.angularMomentumDrift === undefined ||
         (['Io', 'Europa', 'Ganymede'] as const).some(name => last.positionsKm![name].some((n, i) => !nearlyEqual(n, actual.positionsKm![name][i], 1e-6))) ||
         !nearlyEqual(last.energyDrift, actual.energyDrift!, 1e-12) || !nearlyEqual(last.angularMomentumDrift, actual.angularMomentumDrift!, 1e-12) ||

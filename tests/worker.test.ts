@@ -377,6 +377,45 @@ describe('simulation process', () => {
     receive({ data: { type: 'load', checkpoint: exported } });
     expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable' });
   });
+  it('preserves analysis and its baseline when re-importing a v3 export, as unverified data', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(300);
+    receive({ data: { type: 'getExport' } });
+    const checkpoint = sent.at(-1)?.checkpoint as any;
+    const exported = makeExport(checkpoint);
+    expect(exported.schema).toBe('europa-orbit-export-v3');
+    expect(exported.checksum).toBeUndefined();
+    receive({ data: { type: 'load', checkpoint: exported } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable',
+      baseline: checkpoint.baseline, samples: checkpoint.samples });
+    receive({ data: { type: 'getCheckpoint' } });
+    const restored = sent.at(-1)?.checkpoint as any;
+    expect(restored.samples).toEqual(checkpoint.samples);
+    expect(restored.baseline).toEqual(checkpoint.baseline);
+    expect(restored.provenance).toBe('imported-unverified');
+
+    receive({ data: { type: 'pause' } });
+    const corrupted = structuredClone(exported);
+    corrupted.samples.at(-1).positionsKm.Europa[0] += 100;
+    receive({ data: { type: 'load', checkpoint: corrupted } });
+    expect(sent.at(-1)?.snapshot).toMatchObject({ status: 'running', provenance: 'imported-unverified', timeSeconds: checkpoint.state.timeSeconds });
+    expect((sent.at(-1)?.snapshot as { message: string }).message).toMatch(/analysis/);
+  });
+  it('loads older v2 exports without treating their unversioned extension fields as analysis', () => {
+    receive({ data: { type: 'start', parameters: {} } });
+    vi.advanceTimersByTime(200);
+    receive({ data: { type: 'getExport' } });
+    const exported = makeExport(sent.at(-1)?.checkpoint);
+    exported.schema = 'europa-orbit-export-v2';
+    receive({ data: { type: 'load', checkpoint: exported } });
+    const snapshot = sent.at(-1)?.snapshot as any;
+    expect(snapshot.status).toBe('paused');
+    expect(snapshot.provenance).toBe('imported-unverified');
+    expect(snapshot.checksumStatus).toBe('unavailable');
+    expect(snapshot.baseline.kind).toBe('restored');
+    expect(snapshot.samples[0].positionsKm).toBeUndefined();
+    expect(snapshot.samples.at(-1).positionsKm).toBeDefined();
+  });
   it('rejects inconsistent v4 analysis after checksum recomputation without interrupting a running simulation', () => {
     receive({ data: { type: 'start', parameters: {} } });
     vi.advanceTimersByTime(200);
