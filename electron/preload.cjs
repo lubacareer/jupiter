@@ -9,5 +9,7 @@ contextBridge.exposeInMainWorld('europa', {
   },
   saveCheckpoint: () => ipcRenderer.send('simulation:save'),
   loadCheckpoint: () => ipcRenderer.send('simulation:load'),
-  exportData: () => ipcRenderer.send('simulation:export')
+  exportData: () => ipcRenderer.send('simulation:export'),
+  saveGpuDocument: (kind, document) => ipcRenderer.invoke('gpu:save', kind, document),
+  loadGpuCheckpoint: () => ipcRenderer.invoke('gpu:load')
 });
