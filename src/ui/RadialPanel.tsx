@@ -92,7 +92,7 @@ export function RadialPanel({ bridge, onSnapshot }: { bridge?: GpuFileBridge; on
     <p className="radial-note">Status: {snapshot.status}{snapshot.backend && ` · ${snapshot.backend.toUpperCase()}`}{snapshot.device && ` · ${snapshot.device}`}{state && ` · interior time ${years(state.timeSeconds)} years`}</p>
     {diagnostics && <p className="radial-note">Temperature {diagnostics.minTemperatureK.toFixed(2)}–{diagnostics.maxTemperatureK.toFixed(2)} K · mean liquid fraction {diagnostics.meanLiquidFraction.toFixed(3)} · {diagnostics.iceThicknessM === null ? 'No unique ice–liquid transition' : `ice thickness ${(diagnostics.iceThicknessM / 1000).toFixed(2)} km`} · {snapshot.backend === 'gpu' ? 'CPU reference e' : 'E'}nergy balance error {referenceDiagnostics!.energyErrorJ.toExponential(3)} J</p>}
     {snapshot.errors && <p className="radial-note">CPU comparison: temperature {snapshot.errors.maxTemperatureKelvin.toPrecision(3)} K · liquid fraction {snapshot.errors.maxLiquidFraction.toPrecision(3)} · normalized enthalpy {snapshot.errors.normalizedEnergy.toPrecision(3)}</p>}
-    {snapshot.provenance === 'imported-unverified' && <p className="radial-note">Imported interior checkpoint · origin and results unverified.</p>}
+    {snapshot.provenance === 'imported-unverified' && <p className="radial-note">Imported interior checkpoint{snapshot.checksumStatus === 'verified' ? ' · checksum verified at load' : snapshot.checksumStatus === 'unavailable' ? ' · checksum unavailable' : ''} · origin and results unverified.</p>}
     {(snapshot.message || message) && <p role="status" className="radial-note">{snapshot.message || message}</p>}
   </section>
 }

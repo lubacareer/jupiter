@@ -28,8 +28,11 @@ export function cutawayBands({ state, enthalpy, field, scale }: CutawayData): { 
   const bands = profile.cells.map((cell, i) => {
     return { inner: mapRadius(base + i * width), outer: mapRadius(base + (i + 1) * width), value: field === 'temperature' ? cell.temperatureK : cell.liquidFraction }
   })
-  const values = bands.map(b => b.value)
-  return { bands, rockRadius, transitionRadius: transition === null ? null : mapRadius(config.radiusM - transition), min: field === 'temperature' ? Math.min(...values) : 0, max: field === 'temperature' ? Math.max(...values) : 1 }
+  // Keep a given temperature the same color throughout the run. The bounds are
+  // derived from immutable run configuration, not from the evolving field.
+  const temperatureMax = config.material.meltingTemperature + 150
+  const temperatureMin = config.surfaceTemperatureK < temperatureMax ? config.surfaceTemperatureK : 0
+  return { bands, rockRadius, transitionRadius: transition === null ? null : mapRadius(config.radiusM - transition), min: field === 'temperature' ? temperatureMin : 0, max: field === 'temperature' ? temperatureMax : 1 }
 }
 
 /** A perceptually ordered dark-blue to warm-yellow scale, used for both plots and surfaces. */

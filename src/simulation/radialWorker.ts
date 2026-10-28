@@ -2,6 +2,7 @@
 import { createRadialState, radialDiagnostics, radialFieldProfile, stepRadial, validateRadialState, type RadialState } from './radialInterior';
 import { createRadialGpu, type RadialGpuSession } from './radialGpu';
 import { requestHardwareDevice } from './gpuDevice';
+import { checksumRadialCheckpoint, verifyRadialCheckpoint } from './radialIntegrity';
 import type { RadialBackend, RadialWorkerCommand, RadialWorkerEvent, RadialWorkerSnapshot } from './radialProtocol';
 
 type Active = { backend: 'cpu' } | { backend: 'gpu'; session: RadialGpuSession };
@@ -43,8 +44,8 @@ async function getDevice(): Promise<GPUDevice> {
 function document(kind: 'checkpoint' | 'export'): object {
   if (!snapshot.state || !snapshot.backend) throw new Error('No radial interior result is available');
   return {
-    format: kind === 'checkpoint' ? 'europa-radial-checkpoint-v1' : 'europa-radial-export-v1',
-    version: 1, model: 'spherical-radial-enthalpy-v1', backend: snapshot.backend,
+    format: kind === 'checkpoint' ? 'europa-radial-checkpoint-v2' : 'europa-radial-export-v2',
+    version: 2, model: 'spherical-radial-enthalpy-v1', backend: snapshot.backend,
     precision: snapshot.backend === 'gpu' ? 'float32-with-float64-reference' : 'float64',
     device: snapshot.backend === 'gpu' ? snapshot.device ?? 'unknown' : null,
     provenance: snapshot.provenance, state: copyState(snapshot.state),
@@ -58,18 +59,20 @@ function document(kind: 'checkpoint' | 'export'): object {
   };
 }
 
-function parseCheckpoint(value: unknown): { backend: RadialBackend; state: RadialState; gpuEnthalpy?: number[] } {
+async function parseCheckpoint(value: unknown): Promise<{ backend: RadialBackend; state: RadialState; gpuEnthalpy?: number[]; checksumStatus: 'verified' | 'unavailable' }> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('Invalid radial checkpoint');
   const v = value as Record<string, unknown>;
-  if (v.format !== 'europa-radial-checkpoint-v1' || v.version !== 1 || v.model !== 'spherical-radial-enthalpy-v1' ||
+  if (!((v.format === 'europa-radial-checkpoint-v1' && v.version === 1) || (v.format === 'europa-radial-checkpoint-v2' && v.version === 2)) ||
+      v.model !== 'spherical-radial-enthalpy-v1' ||
       (v.backend !== 'cpu' && v.backend !== 'gpu') ||
       v.precision !== (v.backend === 'gpu' ? 'float32-with-float64-reference' : 'float64')) throw new Error('Unsupported radial checkpoint');
+  if (v.version === 2) await verifyRadialCheckpoint(v);
   // Validate before constructing a detached, known-field representation.
   const state = v.state as RadialState;
   validateRadialState(state);
   if (v.backend === 'gpu' && (!Array.isArray(v.gpuEnthalpy) || v.gpuEnthalpy.length !== state.config.cells ||
       v.gpuEnthalpy.some(x => typeof x !== 'number' || !Number.isFinite(x) || Math.fround(x) !== x))) throw new Error('Invalid GPU radial checkpoint');
-  return { backend: v.backend, state: copyState(state), ...(v.backend === 'gpu' ? { gpuEnthalpy: [...v.gpuEnthalpy as number[]] } : {}) };
+  return { backend: v.backend, state: copyState(state), checksumStatus: v.version === 2 ? 'verified' : 'unavailable', ...(v.backend === 'gpu' ? { gpuEnthalpy: [...v.gpuEnthalpy as number[]] } : {}) };
 }
 
 function schedule(): void {
@@ -93,7 +96,7 @@ async function handle(command: RadialWorkerCommand): Promise<void> {
   try {
     switch (command.type) {
       case 'start': case 'load': {
-        const imported = command.type === 'load' ? parseCheckpoint(command.checkpoint) : undefined;
+        const imported = command.type === 'load' ? await parseCheckpoint(command.checkpoint) : undefined;
         const backend = imported?.backend ?? (command.type === 'start' ? command.backend : undefined);
         if (backend !== 'cpu' && backend !== 'gpu') throw new Error('Invalid radial backend');
         const state = imported?.state ?? createRadialState((command as Extract<RadialWorkerCommand, { type: 'start' }>).config);
@@ -109,14 +112,18 @@ async function handle(command: RadialWorkerCommand): Promise<void> {
         snapshot = { ...snapshot, backend, ...result, device: backend === 'gpu' ? deviceDescription : undefined,
           gpuEnthalpy: result.gpuEnthalpy, errors: result.errors,
           restoreRevision, restoredConfig: imported ? copyState(state).config : undefined,
-          status: imported ? 'paused' : 'running', provenance: imported ? 'imported-unverified' : 'local',
-          message: imported ? 'Imported checkpoint origin and fields are unverified.' : undefined };
+          status: imported ? 'paused' : 'running', provenance: imported ? 'imported-unverified' : 'local', checksumStatus: imported?.checksumStatus,
+          message: imported ? (imported.checksumStatus === 'verified' ? 'Checksum verified; imported checkpoint origin and fields remain unverified.' : 'Legacy checkpoint checksum unavailable; origin and fields remain unverified.') : undefined };
         notify(); schedule(); break;
       }
       case 'pause': if (snapshot.status === 'running') { snapshot = { ...snapshot, status: 'paused' }; stopTimer(); } notify(); break;
       case 'resume': if (active && snapshot.status === 'paused') { snapshot = { ...snapshot, status: 'running', message: undefined }; schedule(); } notify(); break;
       case 'reset': generation++; stopTimer(); close(active); active = undefined; snapshot = { status: 'idle', provenance: 'local', device: snapshot.device }; notify(); break;
-      case 'checkpoint': case 'export': self.postMessage({ type: command.type, document: document(command.type) } satisfies RadialWorkerEvent); break;
+      case 'checkpoint': case 'export': {
+        const captured = document(command.type);
+        const saved = command.type === 'checkpoint' ? await checksumRadialCheckpoint(captured) : captured;
+        self.postMessage({ type: command.type, document: saved } satisfies RadialWorkerEvent); break;
+      }
       default: throw new Error('Unsupported radial command');
     }
   } catch (error) { snapshot = { ...snapshot, status: active ? snapshot.status : 'error', message: errorMessage(error) }; notify(); }

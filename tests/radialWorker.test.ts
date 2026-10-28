@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createRadialState, defaultRadialConfig, stepRadial } from '../src/simulation/radialInterior';
+import { createHash } from 'node:crypto';
 
 const mocks = vi.hoisted(() => ({ device: vi.fn(), gpu: vi.fn() }));
 vi.mock('../src/simulation/gpuDevice', () => ({ requestHardwareDevice: mocks.device }));
@@ -14,6 +15,7 @@ const deferred = <T>() => { let resolve!: (value: T) => void; const promise = ne
 
 beforeEach(async () => {
   vi.resetModules(); vi.useFakeTimers(); worker = { postMessage: vi.fn() }; vi.stubGlobal('self', worker);
+  vi.stubGlobal('crypto', { subtle: { digest: async (_algorithm: string, bytes: Uint8Array) => Uint8Array.from(createHash('sha256').update(bytes).digest()).buffer } });
   mocks.device.mockReset(); mocks.gpu.mockReset();
   await import('../src/simulation/radialWorker');
 });
@@ -26,11 +28,72 @@ describe('independent radial worker', () => {
     expect(snapshots().at(-1).state.timeSeconds).toBeGreaterThan(0);
     send({ type: 'pause' }); send({ type: 'checkpoint' }); send({ type: 'export' }); await flush();
     const saved = structuredClone(doc('checkpoint'));
-    expect(saved.format).toBe('europa-radial-checkpoint-v1');
-    expect(doc('export').format).toBe('europa-radial-export-v1');
+    expect(saved.format).toBe('europa-radial-checkpoint-v2');
+    expect(saved.checksum.algorithm).toBe('sha256');
+    expect(doc('export').format).toBe('europa-radial-export-v2');
+    expect(doc('export').checksum).toBeUndefined();
     expect(saved.units.enthalpy).toBe('J/m^3');
     send({ type: 'reset' }); send({ type: 'load', checkpoint: saved }); await flush();
-    expect(snapshots().at(-1)).toMatchObject({ status: 'paused', provenance: 'imported-unverified', state: saved.state });
+    expect(snapshots().at(-1)).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'verified', state: saved.state });
+  });
+  it('loads legacy v1 without a checksum and labels its origin unverified', async () => {
+    send({ type: 'start', backend: 'cpu', config: defaultRadialConfig() }); await flush();
+    send({ type: 'pause' }); send({ type: 'checkpoint' }); await flush();
+    const saved = structuredClone(doc('checkpoint'));
+    delete saved.checksum; saved.version = 1; saved.format = 'europa-radial-checkpoint-v1';
+    send({ type: 'load', checkpoint: saved }); await flush();
+    expect(snapshots().at(-1)).toMatchObject({ status: 'paused', provenance: 'imported-unverified', checksumStatus: 'unavailable' });
+    send({ type: 'checkpoint' }); await flush();
+    expect(doc('checkpoint')).toMatchObject({ version: 2, provenance: 'imported-unverified', checksum: { algorithm: 'sha256' } });
+    expect(doc('checkpoint').checksumStatus).toBeUndefined();
+  });
+  it('hashes a detached published snapshot while the run continues', async () => {
+    const pending = deferred<ArrayBuffer>();
+    let calculated: ArrayBuffer | undefined;
+    vi.stubGlobal('crypto', { subtle: { digest: (_algorithm: string, bytes: Uint8Array) => {
+      calculated = Uint8Array.from(createHash('sha256').update(bytes).digest()).buffer;
+      return pending.promise;
+    } } });
+    send({ type: 'start', backend: 'cpu', config: defaultRadialConfig() }); await flush();
+    send({ type: 'checkpoint' }); await flush();
+    await vi.advanceTimersByTimeAsync(90); await flush();
+    expect(snapshots().at(-1).state.timeSeconds).toBeGreaterThan(0);
+    pending.resolve(calculated!); await flush();
+    expect(doc('checkpoint').state.timeSeconds).toBe(0);
+  });
+  it('rejects altered payload and checksum without interrupting an active run', async () => {
+    send({ type: 'start', backend: 'cpu', config: defaultRadialConfig() }); await flush();
+    send({ type: 'checkpoint' }); await flush();
+    const original = structuredClone(doc('checkpoint'));
+    for (const tamper of [
+      (v: any) => { v.state.enthalpy[0] += 123; },
+      (v: any) => { v.state.config.basalHeatFluxWm2 += 1; },
+      (v: any) => { v.device = 'different device'; },
+      (v: any) => { v.checksum.digest = '0'.repeat(64); },
+      (v: any) => { delete v.checksum; },
+    ]) {
+      const changed = structuredClone(original); tamper(changed);
+      send({ type: 'load', checkpoint: changed }); await flush();
+      expect(snapshots().at(-1)).toMatchObject({ status: 'running', message: expect.stringMatching(/checksum/i) });
+    }
+    const changedModel = structuredClone(original); changedModel.model = 'other';
+    send({ type: 'load', checkpoint: changedModel }); await flush();
+    expect(snapshots().at(-1)).toMatchObject({ status: 'running', message: expect.stringMatching(/unsupported/i) });
+  });
+  it('checksums GPU field values and verifies key order independently of whitespace', async () => {
+    const state = createRadialState(defaultRadialConfig());
+    const result = { state, gpuEnthalpy: Array.from(Float32Array.from(state.enthalpy)), errors: { maxTemperatureKelvin: 0, maxLiquidFraction: 0, normalizedEnergy: 0 } };
+    mocks.device.mockResolvedValue({ device: { lost: new Promise(() => {}) }, description: 'hardware' });
+    mocks.gpu.mockResolvedValue({ snapshot: () => result, advance: vi.fn(), destroy: vi.fn() });
+    send({ type: 'start', backend: 'gpu', config: defaultRadialConfig() }); await flush();
+    send({ type: 'checkpoint' }); await flush();
+    const saved = structuredClone(doc('checkpoint'));
+    const reversed = Object.fromEntries(Object.entries(saved).reverse());
+    send({ type: 'load', checkpoint: JSON.parse(JSON.stringify(reversed, null, 4)) }); await flush();
+    expect(snapshots().at(-1)).toMatchObject({ status: 'paused', checksumStatus: 'verified', provenance: 'imported-unverified' });
+    const corrupt = structuredClone(saved); corrupt.gpuEnthalpy[0] += 10;
+    send({ type: 'load', checkpoint: corrupt }); await flush();
+    expect(snapshots().at(-1)).toMatchObject({ status: 'paused', message: expect.stringMatching(/checksum mismatch/i) });
   });
   it('rejects an invalid load without interrupting a running CPU result', async () => {
     send({ type: 'start', backend: 'cpu', config: defaultRadialConfig() }); await flush();

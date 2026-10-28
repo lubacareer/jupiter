@@ -10,6 +10,7 @@ export type RadialWorkerSnapshot = {
   errors?: RadialGpuErrors;
   device?: string;
   provenance: 'local' | 'imported-unverified';
+  checksumStatus?: 'verified' | 'unavailable';
   message?: string;
   restoreRevision?: number;
   restoredConfig?: RadialConfig;
