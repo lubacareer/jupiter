@@ -130,6 +130,64 @@ describe('GPU worker command ordering', () => {
     expect(snapshots().at(-1).status).toBe('error');
   });
 
+  it('saves the last published thermal state when device loss overtakes a completed step', async () => {
+    const lost = deferred<{ message: string; reason: string }>();
+    mocks.getDevice.mockResolvedValue({ device: { lost: lost.promise }, description: 'test hardware' });
+    const errors = { maxTemperatureKelvin: 0, maxLiquidFraction: 0, normalizedEnergy: 0 };
+    const first = { version: 1, time: 0, errors, gpuEnthalpy: [1], referenceEnthalpy: [1] };
+    const later = { ...first, time: 10, gpuEnthalpy: [2], referenceEnthalpy: [2] };
+    const step = deferred<typeof first>();
+    let live = first;
+    const thermal = { snapshot: vi.fn(() => live), advance: vi.fn(() => step.promise), destroy: vi.fn() };
+    mocks.createThermal.mockResolvedValue(thermal);
+    send({ type: 'start-thermal', config: {} }); await flush();
+    send({ type: 'checkpoint' }); await flush();
+    expect(worker.postMessage.mock.calls.map(call => call[0]).filter(message => message.type === 'checkpoint').at(-1).checkpoint.data).toEqual(first);
+    vi.advanceTimersByTime(30); await flush();
+    live = later; // The session advanced, but its result has not been published.
+    lost.resolve({ message: 'device removed', reason: 'unknown' }); await flush();
+    step.resolve(later); await flush();
+    send({ type: 'checkpoint' }); send({ type: 'export' }); await flush();
+    for (const kind of ['checkpoint', 'export']) {
+      const result = worker.postMessage.mock.calls.map(call => call[0]).filter(message => message.type === kind).at(-1).checkpoint;
+      expect(result.data).toEqual(first);
+      expect(result.history).toEqual([{ timeSeconds: 0, error: 0 }]);
+    }
+    expect(snapshots().at(-1)).toMatchObject({ status: 'error', thermal: first });
+    send({ type: 'reset' }); send({ type: 'checkpoint' }); await flush();
+    expect(snapshots().at(-1).message).toMatch(/No GPU experiment/);
+  });
+
+  it('saves the updated thermal state after the matching history is published', async () => {
+    const errors = { maxTemperatureKelvin: 0, maxLiquidFraction: 0, normalizedEnergy: 0 };
+    const first = { version: 1, time: 0, errors };
+    const later = { version: 1, time: 10, errors };
+    let live = first;
+    mocks.createThermal.mockResolvedValue({ snapshot: () => live, advance: async () => { live = later; return later; }, destroy: vi.fn() });
+    send({ type: 'start-thermal', config: {} }); await flush();
+    await vi.advanceTimersByTimeAsync(30); await flush();
+    send({ type: 'checkpoint' }); await flush();
+    const saved = worker.postMessage.mock.calls.map(call => call[0]).filter(message => message.type === 'checkpoint').at(-1).checkpoint;
+    expect(saved.data).toEqual(later);
+    expect(saved.history).toEqual([{ timeSeconds: 0, error: 0 }, { timeSeconds: 10, error: 0 }]);
+  });
+
+  it('does not relabel an old result when a replacement adapter fails', async () => {
+    const lostA = deferred<{ message: string; reason: string }>();
+    const lostB = deferred<{ message: string; reason: string }>();
+    mocks.getDevice.mockResolvedValueOnce({ device: { lost: lostA.promise }, description: 'adapter A' })
+      .mockResolvedValueOnce({ device: { lost: lostB.promise }, description: 'adapter B' });
+    send({ type: 'start-orbit', parameters: {} }); await flush();
+    lostA.resolve({ message: 'removed', reason: 'unknown' }); await flush();
+    mocks.createOrbit.mockRejectedValueOnce(new Error('replacement rejected'));
+    send({ type: 'start-orbit', parameters: {} }); await flush();
+    expect(snapshots().at(-1)).toMatchObject({ status: 'error', device: 'adapter A', message: 'replacement rejected' });
+    send({ type: 'probe' }); await flush();
+    expect(snapshots().at(-1).device).toBe('adapter A');
+    send({ type: 'checkpoint' }); await flush();
+    expect(worker.postMessage.mock.calls.map(call => call[0]).filter(message => message.type === 'checkpoint').at(-1).checkpoint.data).toEqual({});
+  });
+
   it('anchors legacy restores at the restored state without fabricating a trail', async () => {
     let later = initial;
     for (let i = 0; i < 12; i++) later = stepOrbit(later, 300);

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { createGpuCheckpoint, exportGpuResult, parseGpuCheckpoint } from '../simulation/gpuCheckpoint'
 import { defaultGpuThermalConfig } from '../simulation/gpuThermal'
 import { phaseFromEnthalpy } from '../simulation/interior'
@@ -9,16 +9,20 @@ import { OrbitDiagnosticsView, OrbitView } from './OrbitAnalysis'
 export interface GpuFileBridge {
   saveGpuDocument: (kind: 'checkpoint' | 'export', document: object) => Promise<boolean>
   loadGpuCheckpoint: () => Promise<unknown>
+  saveRadialDocument?: (kind: 'checkpoint' | 'export', document: object) => Promise<boolean>
+  loadRadialCheckpoint?: () => Promise<unknown>
 }
 
 /** A separate worker keeps GPU work and its independent CPU comparison off the UI thread. */
-export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverrides; bridge: GpuFileBridge }) {
+export function GpuPanel({ parameters, bridge, onSnapshot }: { parameters: ParameterOverrides; bridge: GpuFileBridge; onSnapshot?: (snapshot: GpuWorkerSnapshot) => void }) {
   const worker = useRef<Worker | null>(null)
   const latest = useRef<GpuWorkerSnapshot>({ status: 'idle', history: [], provenance: 'local' })
   const [snapshot, setSnapshot] = useState(latest.current)
   const [fileMessage, setFileMessage] = useState('')
   const [workerFailed, setWorkerFailed] = useState(false)
   const [workerGeneration, setWorkerGeneration] = useState(0)
+  const onSnapshotRef = useRef(onSnapshot)
+  useLayoutEffect(() => { onSnapshotRef.current = onSnapshot }, [onSnapshot])
   const send = (command: GpuWorkerCommand) => worker.current?.postMessage(command)
   useEffect(() => {
     const instance = new Worker(new URL('../simulation/gpuWorker.ts', import.meta.url), { type: 'module' })
@@ -28,6 +32,7 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       if (event.data.type === 'snapshot') {
         latest.current = event.data.snapshot
         setSnapshot(event.data.snapshot)
+        onSnapshotRef.current?.(event.data.snapshot)
         return
       }
       const { checkpoint, type: kind } = event.data
@@ -53,6 +58,7 @@ export function GpuPanel({ parameters, bridge }: { parameters: ParameterOverride
       const failed: GpuWorkerSnapshot = { status: 'error', history: [], provenance: 'local', message: 'GPU worker exited; in-memory results were lost. Retry to start a fresh worker.' }
       latest.current = failed
       setSnapshot(failed)
+      onSnapshotRef.current?.(failed)
     }
     instance.postMessage({ type: 'probe' } satisfies GpuWorkerCommand)
     return () => { instance.terminate(); if (worker.current === instance) worker.current = null }

@@ -12,6 +12,7 @@ let active: Active | undefined;
 let publishedOrbitCheckpoint: GpuOrbitCheckpoint | undefined;
 let snapshot: GpuWorkerSnapshot = { status: 'idle', history: [], provenance: 'local' };
 let device: GPUDevice | undefined;
+let deviceDescription: string | undefined;
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stepping = false;
 let generation = 0;
@@ -25,10 +26,10 @@ async function getDevice(): Promise<GPUDevice> {
   if (device) return device;
   const selected = await requestHardwareDevice();
   device = selected.device;
-  snapshot = { ...snapshot, device: selected.description };
+  deviceDescription = selected.description;
   selected.device.lost.then(info => {
     if (device !== selected.device) return;
-    device = undefined; generation++; stopTimer();
+    device = undefined; deviceDescription = undefined; generation++; stopTimer();
     snapshot = { ...snapshot, status: 'error', message: `GPU device lost: ${info.message || info.reason}` };
     notify();
   });
@@ -42,7 +43,10 @@ function currentCheckpoint(): GpuWorkerCheckpoint {
     if (!publishedOrbitCheckpoint) throw new Error('No published GPU orbital state is available');
     return { mode: 'orbit', data: publishedOrbitCheckpoint, history, orbitAnalysisSamples: snapshot.orbitAnalysisSamples, orbitAnalysisBaseline: snapshot.orbitAnalysisBaseline };
   }
-  return { mode: 'thermal', data: active.session.snapshot(), history };
+  // A completed step can be overtaken by device loss before its publication.
+  // The displayed snapshot is the last field whose history was published.
+  if (!snapshot.thermal) throw new Error('No published GPU thermal state is available');
+  return { mode: 'thermal', data: snapshot.thermal, history };
 }
 
 function restoreAnalysis(checkpoint: Extract<GpuWorkerCheckpoint, { mode: 'orbit' }>, next: GpuOrbitSession, history: GpuHistoryEntry[]): { samples: OrbitalSample[]; baseline: OrbitalBaseline } {
@@ -118,7 +122,7 @@ function schedule(): void {
 async function handle(command: GpuWorkerCommand): Promise<void> {
   try {
     switch (command.type) {
-      case 'probe': await getDevice(); snapshot = { ...snapshot, message: 'Hardware WebGPU device available.' }; notify(); break;
+      case 'probe': await getDevice(); snapshot = { ...snapshot, device: active ? snapshot.device : deviceDescription, message: 'Hardware WebGPU device available.' }; notify(); break;
       case 'start-orbit': case 'start-thermal': case 'load': {
         let loadedHistory: GpuHistoryEntry[] | undefined;
         if (command.type === 'load') {
@@ -148,7 +152,7 @@ async function handle(command: GpuWorkerCommand): Promise<void> {
         generation++; stopTimer(); close(active); active = next;
         publishedOrbitCheckpoint = next.mode === 'orbit' ? next.session.checkpoint() : undefined;
         const completed = next.mode === 'orbit' && next.session.sample().completed;
-        snapshot = { ...snapshot, mode: next.mode, ...display(next), history: loadedHistory ?? initialHistory(next), orbitAnalysisSamples: analysis?.samples, orbitAnalysisBaseline: analysis?.baseline, status: completed ? 'completed' : command.type === 'load' ? 'paused' : 'running', provenance: command.type === 'load' ? 'imported-unverified' : 'local', message: completed ? (command.type === 'load' ? 'Ten-orbit limit reached. Imported origin is unverified.' : 'Ten-orbit limit reached.') : command.type === 'load' ? 'Imported origin is unverified.' : undefined };
+        snapshot = { ...snapshot, mode: next.mode, ...display(next), device: deviceDescription, history: loadedHistory ?? initialHistory(next), orbitAnalysisSamples: analysis?.samples, orbitAnalysisBaseline: analysis?.baseline, status: completed ? 'completed' : command.type === 'load' ? 'paused' : 'running', provenance: command.type === 'load' ? 'imported-unverified' : 'local', message: completed ? (command.type === 'load' ? 'Ten-orbit limit reached. Imported origin is unverified.' : 'Ten-orbit limit reached.') : command.type === 'load' ? 'Imported origin is unverified.' : undefined };
         notify(); schedule(); break;
       }
       case 'pause': if (snapshot.status === 'running') { snapshot = { ...snapshot, status: 'paused' }; stopTimer(); } notify(); break;

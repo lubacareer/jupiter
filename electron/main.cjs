@@ -85,6 +85,23 @@ app.whenReady().then(() => {
     if (stat.size > 5_000_000) throw new Error('Checkpoint exceeds 5 MB');
     return JSON.parse(await fs.readFile(result.filePaths[0], 'utf8'));
   });
+  ipcMain.handle('radial:save', async (event, kind, document) => {
+    if (!allowed(event) || !['checkpoint', 'export'].includes(kind)) throw new Error('Invalid save request');
+    if (!document || typeof document !== 'object' || Buffer.byteLength(JSON.stringify(document), 'utf8') > 5_000_000) throw new Error('Document exceeds 5 MB or is invalid');
+    const currentWindow = window;
+    const result = await dialog.showSaveDialog(currentWindow, { defaultPath: kind === 'checkpoint' ? 'europa-interior-checkpoint.json' : 'europa-interior.json', filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (result.canceled || !result.filePath) return false;
+    await writeJsonAtomically(result.filePath, document);
+    return true;
+  });
+  ipcMain.handle('radial:load', async (event) => {
+    if (!allowed(event)) throw new Error('Invalid load request');
+    const result = await dialog.showOpenDialog(window, { properties: ['openFile'], filters: [{ name: 'JSON', extensions: ['json'] }] });
+    if (result.canceled || !result.filePaths[0]) return null;
+    const stat = await fs.stat(result.filePaths[0]);
+    if (stat.size > 5_000_000) throw new Error('Checkpoint exceeds 5 MB');
+    return JSON.parse(await fs.readFile(result.filePaths[0], 'utf8'));
+  });
   ipcMain.on('simulation:load', async (event) => {
     if (!allowed(event)) return;
     const currentWindow = window;
